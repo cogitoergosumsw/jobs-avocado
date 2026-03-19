@@ -1,6 +1,6 @@
 # Jobs Avocado — Implementation Plan
 
-> Engineering strategy for building an open-source job application platform with a commercial cloud path.
+> Engineering strategy for building an open-source job application management platform.
 
 ---
 
@@ -16,14 +16,12 @@
 8. [Job discovery pipeline](#8-job-discovery-pipeline)
 9. [Email & Smart Router](#9-email--smart-router)
 10. [Self-hosting & deployment](#10-self-hosting--deployment)
-11. [Cloud deployment](#11-cloud-deployment)
-12. [Open core boundary](#12-open-core-boundary)
-13. [Phase 1 — Foundation](#13-phase-1--foundation-months-16)
-14. [Phase 2 — Growth](#14-phase-2--growth-months-612)
-15. [Phase 3 — B2B](#15-phase-3--b2b-months-1218)
-16. [Testing strategy](#16-testing-strategy)
-17. [Security considerations](#17-security-considerations)
-18. [Contributing guidelines](#18-contributing-guidelines)
+11. [Phase 1 — Foundation](#11-phase-1--foundation-months-16)
+12. [Phase 2 — Growth](#12-phase-2--growth-months-612)
+13. [Phase 3 — B2B](#13-phase-3--b2b-months-1218)
+14. [Testing strategy](#14-testing-strategy)
+15. [Security considerations](#15-security-considerations)
+16. [Contributing guidelines](#16-contributing-guidelines)
 
 ---
 
@@ -32,10 +30,7 @@
 Every architectural decision should pass three tests:
 
 **Can a solo developer self-host this on a $10/month VPS?**
-The self-hosted experience must not require Kubernetes, managed databases, or cloud-specific services. Docker Compose with SQLite as the default storage is the bar. If something only works on AWS, it's not open source in any meaningful sense.
-
-**Does this decision complicate or simplify the eventual cloud offering?**
-The codebase is written once. Cloud-specific behaviour (managed AI, email infrastructure, multi-tenant billing) is additive — not a rewrite. The OSS version and cloud version run the same application code, with the cloud layer adding thin service adapters on top.
+The self-hosted experience must not require Kubernetes, managed databases, or cloud-specific services. Docker Compose with PostgreSQL is the bar. If something only works on AWS, it's not open source in any meaningful sense.
 
 **Does this create lock-in for users?**
 Data must always be exportable in standard formats. No proprietary storage formats, no vendor-specific query languages in user-facing data, no features that only work if you pay. Lock-in erodes the trust that is the product's core competitive advantage.
@@ -44,12 +39,12 @@ Data must always be exportable in standard formats. No proprietary storage forma
 
 ## 2. Repository structure
 
-A monorepo managed with [Turborepo](https://turbo.build/repo) across all TypeScript services and packages — frontend, scrapers, and shared utilities. The Go services use a separate Go workspace. Everything is orchestrated locally with a single `docker compose up`.
+A monorepo managed with [Turborepo v2.8+](https://turbo.build/repo) across all TypeScript services and packages — frontend, scrapers, and shared utilities. The Go services use a separate Go workspace with a shared `internal/` module for code reused between the API and worker (AI abstraction, crypto utilities). Everything is orchestrated locally with a single `docker compose up`.
 
 ```
 jobs-avocado/
 ├── apps/
-│   ├── web/                        # Next.js 15 frontend (App Router)
+│   ├── web/                        # Next.js 16 frontend (App Router)
 │   │   ├── src/
 │   │   ├── package.json
 │   │   └── Dockerfile
@@ -58,8 +53,7 @@ jobs-avocado/
 │   │   ├── internal/
 │   │   │   ├── handlers/           # Gin route handlers
 │   │   │   ├── middleware/         # Auth, rate limiting, CORS
-│   │   │   ├── services/           # Business logic
-│   │   │   └── ai/                 # AI provider abstraction
+│   │   │   └── services/           # Business logic
 │   │   ├── db/
 │   │   │   ├── migrations/         # .sql migration files (golang-migrate)
 │   │   │   ├── queries/            # .sql query files (sqlc input)
@@ -74,13 +68,29 @@ jobs-avocado/
 │   │   ├── go.mod
 │   │   └── Dockerfile
 │   └── docs/                       # Docusaurus documentation site
+├── internal/                       # Shared Go module (AI, crypto)
+│   ├── ai/
+│   │   ├── provider.go             # Provider interface + factory
+│   │   ├── providers/
+│   │   │   ├── openai.go           # OpenAI-compatible (covers OpenAI, OpenRouter, Anthropic via OpenRouter)
+│   │   │   └── ollama.go           # Ollama (local models)
+│   │   └── prompts/
+│   │       ├── embed.go            # embed.FS loader for prompt templates
+│   │       ├── suitability.txt     # Suitability scoring prompt
+│   │       ├── extract.txt         # JD field extraction prompt
+│   │       ├── cover_letter.txt    # Cover letter generation prompt
+│   │       ├── ats_score.txt       # ATS keyword scoring prompt
+│   │       └── interview_prep.txt  # Interview prep prompt
+│   ├── crypto/
+│   │   └── keys.go                 # AES-256-GCM encryption for API keys
+│   └── go.mod
 ├── scrapers/
-│   ├── shared/                     # Shared TypeScript — types + Redis client
+│   ├── shared/                     # Shared TypeScript — types + HTTP client
 │   │   ├── src/
 │   │   │   ├── types.ts            # RawJob, ScrapeTask interfaces
-│   │   │   └── queue.ts            # Redis stream client (ioredis)
+│   │   │   └── client.ts           # HTTP client for scraper service calls
 │   │   └── package.json
-│   ├── linkedin/                   # TypeScript — Playwright + Camoufox CDP
+│   ├── linkedin/                   # TypeScript — Playwright + stealth
 │   │   ├── src/scraper.ts
 │   │   ├── package.json
 │   │   └── Dockerfile
@@ -88,7 +98,7 @@ jobs-avocado/
 │   │   ├── src/scraper.ts
 │   │   ├── package.json
 │   │   └── Dockerfile
-│   ├── glassdoor/                  # TypeScript — Playwright + Camoufox CDP
+│   ├── glassdoor/                  # TypeScript — Playwright + stealth
 │   │   ├── src/scraper.ts
 │   │   ├── package.json
 │   │   └── Dockerfile
@@ -101,15 +111,15 @@ jobs-avocado/
 │   ├── config/                     # Shared ESLint, TypeScript, Tailwind configs
 │   └── api-client/                 # Generated TypeScript client from OpenAPI spec
 ├── openapi/
-│   └── jobs-avocado.yaml             # OpenAPI 3.1 spec (source of truth for API contract)
+│   └── jobs-avocado.yaml           # OpenAPI 3.1 spec (source of truth for API contract)
 ├── docker/
 │   ├── docker-compose.yml          # Self-hosted full stack
 │   ├── docker-compose.minimal.yml  # No pipeline, no scrapers (tracker only)
 │   └── docker-compose.dev.yml      # Local development with hot reload
 ├── scripts/
-│   ├── generate-api-client.sh      # Runs openapi-typescript-codegen from spec
+│   ├── generate-api-client.sh      # Runs openapi-typescript from spec
 │   └── sqlc-generate.sh            # Runs sqlc against queries/ directory
-├── go.work                         # Go workspace (links apps/api and apps/worker)
+├── go.work                         # Go workspace (links apps/api, apps/worker, and internal/)
 ├── turbo.json                      # Turborepo config (web + scrapers + packages + docs)
 ├── .env.example
 └── package.json                    # Root workspace — npm workspaces
@@ -117,37 +127,42 @@ jobs-avocado/
 
 ### Why this structure
 
-Turborepo now manages the entire TypeScript surface — `apps/web`, `apps/docs`, `scrapers/*`, and `packages/*` — as a single workspace graph. They share the `tsconfig` base, ESLint config, and Prettier config from `packages/config/`. The `scrapers/shared/` package is a proper Turborepo package, importable by any scraper with zero duplication.
+Turborepo manages the entire TypeScript surface — `apps/web`, `apps/docs`, `scrapers/*`, and `packages/*` — as a single workspace graph. They share the `tsconfig` base, ESLint config, and Prettier config from `packages/config/`. The `scrapers/shared/` package is a proper Turborepo package, importable by any scraper with zero duplication.
 
-The Go workspace (`go.work`) links `apps/api` and `apps/worker` independently — they are separate binaries that share internal domain types.
+The Go workspace (`go.work`) links three modules: `apps/api`, `apps/worker`, and `internal/`. The `internal/` module contains code shared between the API and worker — primarily the AI provider abstraction and crypto utilities. This avoids duplicating the AI package across two services.
 
 The API contract boundary between TypeScript and Go is the OpenAPI spec. Everything within the TypeScript world (frontend, scrapers, shared packages) shares types natively. The Go side generates its own types from the same spec via `oapi-codegen`.
+
+### Shared Go module: `internal/`
+
+The AI provider interface, prompt templates, and encryption utilities live in a shared Go module at `internal/`. Both `apps/api` and `apps/worker` import from it via the Go workspace. This is a direct response to the risk of duplicating the AI abstraction — a single change to the provider interface or a prompt template propagates to both services automatically.
 
 ---
 
 ## 3. Tech stack
 
-### Frontend — Next.js 15 (App Router)
+### Frontend — Next.js 16 (App Router)
 
 - **Why Next.js:** App Router enables server components for fast initial loads. The same build artifact runs on Vercel (cloud) or a Docker container (self-hosted). No separate SSR server to operate.
-- **Styling:** Tailwind CSS + shadcn/ui. shadcn components are copy-pasted into the repo — no runtime library, no version conflicts, fully customisable.
-- **State:** Zustand for local UI state. TanStack Query for server state, caching, and optimistic updates.
-- **API client:** Generated TypeScript client from the OpenAPI spec (`packages/api-client/`). Regenerated in CI on every spec change — frontend types are always in sync with the Go API.
+- **Version note:** Next.js 16 makes `params` and route segment props asynchronous — they must be `await`-ed in page/layout functions. This is a breaking change from v15.
+- **Styling:** Tailwind CSS v4 + shadcn/ui (CLI v3.5). Tailwind v4 uses CSS-native configuration (`@import "tailwindcss"` instead of `@tailwind` directives; no `tailwind.config.js` required by default). shadcn components are copy-pasted into the repo via CLI — no runtime library, no version conflicts, fully customisable.
+- **State:** Zustand for local UI state. TanStack Query v5 for server state, caching, and optimistic updates. TanStack Query v5 uses single-object arguments for all hooks (no positional overloads).
+- **API client:** Generated TypeScript types from the OpenAPI spec using `openapi-typescript` (types only, no runtime client). A hand-written fetch wrapper with Zod validation provides the actual HTTP calls. Full runtime codegen is deferred to Phase 2 when the API surface stabilises.
 - **Forms:** React Hook Form + Zod. Zod schemas validate against the same field shapes defined in the OpenAPI spec.
-- **DnD:** `@dnd-kit/core` for Kanban drag-and-drop.
+- **DnD:** `@dnd-kit/react` (v0.x — the library is being rewritten from `@dnd-kit/core` + `@dnd-kit/sortable` into a unified package). The old packages are in maintenance mode; new projects should use `@dnd-kit/react` + `@dnd-kit/helpers`.
 
-### API — Go + Gin
+### API — Go + Gin v1.10
 
-- **Why Go:** The API workload — concurrent scraping task dispatch, AI request fanout, queue publishing, real-time WebSocket pushes — is a natural fit for goroutines and Go's lightweight concurrency model. Binary size and startup time are a fraction of a JVM or Node process, which matters for self-hosters on small VPS instances. Docker images are ~15MB.
+- **Why Go:** The API workload — concurrent scraping task dispatch, AI request fanout, queue publishing, real-time SSE pushes — is a natural fit for goroutines and Go's lightweight concurrency model. Binary size and startup time are a fraction of a JVM or Node process, which matters for self-hosters on small VPS instances. Docker images are ~15MB.
 - **Why Gin:** The most widely adopted Go web framework. Excellent middleware ecosystem, familiar to Go contributors, and straightforward to test. Routes are explicit and readable — no magic.
 - **Validation:** Request/response types are generated from the OpenAPI spec via `oapi-codegen`. Gin middleware validates incoming requests against the spec automatically — no hand-written validators.
-- **Real-time:** Server-Sent Events (SSE) for pipeline progress and job state updates pushed to the browser. Simpler than WebSockets for unidirectional server-to-client streams; no additional infrastructure required.
+- **Real-time:** Server-Sent Events (SSE) for pipeline progress and job state updates pushed to the browser. The Go API subscribes to Redis Pub/Sub channels per user (`sse:{userID}`) and forwards events to the client's SSE connection. The worker publishes to these channels after completing tasks. This Redis Pub/Sub bridge solves the delivery gap between background task completion and the API's SSE connections.
 
-### Database — PostgreSQL + sqlc
+### Database — PostgreSQL 16 + sqlc v1.30
 
-- **Why PostgreSQL:** Full-text search (job search bar), JSONB for JD snapshot storage, and row-level security (RLS) for cloud multi-tenancy.
+- **Why PostgreSQL:** Full-text search (job search bar), JSONB for JD snapshot storage, and row-level security (RLS) for multi-tenancy.
 - **Why sqlc:** sqlc reads plain `.sql` query files and generates fully type-safe Go functions. There is no ORM, no reflection, no struct tag magic. The generated functions are plain Go — readable, testable, and auditable by any contributor. SQL is the interface; Go is the output.
-- **Migrations:** `golang-migrate` runs sequential numbered `.sql` migration files. Migrations are committed to the repo and run automatically by an init container on `docker compose up`. No migration DSL to learn — just SQL.
+- **Migrations:** `golang-migrate` v4.18 runs sequential numbered `.sql` migration files. Migrations are committed to the repo and run automatically by an init container on `docker compose up`. No migration DSL to learn — just SQL.
 - **Generated code is committed:** The output of `sqlc generate` lives in `apps/api/db/generated/` and is committed to the repo. Contributors do not need `sqlc` installed to build the project — they only need it when modifying queries.
 
 ```sql
@@ -166,21 +181,25 @@ func (q *Queries) GetJobsByUser(ctx context.Context, userID uuid.UUID) ([]Job, e
 }
 ```
 
-### Background jobs — Go + Asynq
+### Background jobs — Go + Asynq v0.28
 
 - **Why Asynq:** A Redis-backed distributed task queue for Go. Mature (used in production by many Go services), well-documented, and API-compatible with BullMQ concepts (queues, priorities, retries, scheduling, cron jobs). The worker binary is a single Go process — same language, same toolchain, same Docker build pattern as the API.
 - **Task types:** AI scoring, resume tailoring, PDF generation, email polling, scraper task dispatch, backup scheduling, webhook delivery.
 - **Asynq Inspector:** Built-in web UI for monitoring queue state, retrying failed tasks, and viewing task history. Exposed on an internal port in the Docker Compose stack.
 
-### TypeScript scrapers — independent containers
+### TypeScript scrapers — stateless HTTP services
 
-Each scraper is a self-contained TypeScript service in `scrapers/<board>/`. They share types and the Redis client from `scrapers/shared/` via the Turborepo workspace, but each has its own `package.json`, pinned `node_modules`, and Docker image.
+Each scraper is a self-contained TypeScript service in `scrapers/<board>/`. They share types from `scrapers/shared/` via the Turborepo workspace, but each has its own `package.json`, pinned `node_modules`, and Docker image.
 
-- **Playwright (Node.js):** The primary Playwright API is TypeScript-first. All browser automation — page navigation, element selection, request interception — uses `@playwright/test`'s underlying browser API (`chromium.connectOverCDP` for Camoufox, or `chromium.launch()` for simpler scrapers).
-- **Camoufox:** Bot-hostile boards (LinkedIn, Glassdoor) connect to the shared Camoufox sidecar via CDP: `chromium.connectOverCDP('http://camoufox:9222')`. Boards without aggressive bot detection launch their own lightweight Chromium instance.
-- **fetch() for API scrapers:** Boards with official APIs (Adzuna, The Muse) skip Playwright entirely and use the native `fetch()` — no browser, no dependency on Camoufox.
-- **Communication:** Redis Streams via `ioredis`. Shared types from `scrapers/shared/src/types.ts` ensure the `RawJob` shape is consistent across all scrapers without duplication.
+Scrapers are implemented as **stateless HTTP services** (`POST /scrape` → returns `RawJob[]`) rather than long-running Redis Streams consumers. This eliminates the complexity of `XREAD BLOCK` loops, consumer groups, and shared queue clients. The Go worker calls each scraper's HTTP endpoint when dispatching a scrape task and receives the results synchronously. Redis is still used for Asynq task queues but not for scraper communication.
+
+If scraper runs exceed HTTP timeouts in production, the architecture can be migrated to Redis Streams with `XREADGROUP` consumer groups (not `XREAD` from `$`, which misses messages published before the consumer starts).
+
+- **Playwright v1.58 (Node.js):** The primary Playwright API is TypeScript-first. All browser automation — page navigation, element selection, request interception — uses Playwright's browser API.
+- **Anti-bot stealth:** Bot-hostile boards (LinkedIn, Glassdoor) use `playwright-extra` with the stealth plugin for fingerprint evasion. See the [Camoufox note](#camoufox-decision) below for why CDP-based anti-detect was ruled out.
+- **fetch() for API scrapers:** Boards with official APIs (Adzuna, The Muse) skip Playwright entirely and use the native `fetch()` — no browser dependency.
 - **Turborepo integration:** All scraper packages are part of the Turborepo workspace. They share `packages/config/` for TypeScript and ESLint settings. `turbo run build` builds all scrapers in parallel with caching.
+- **Single container for self-hosted:** For self-hosted deployments, all scrapers are merged into one TypeScript process that dispatches internally by board type. This reduces container count and eliminates duplicate Node.js runtimes. Cloud deployment can split them out later for independent scaling.
 
 ```typescript
 // scrapers/shared/src/types.ts
@@ -206,50 +225,116 @@ export interface RawJob {
 ```
 
 ```typescript
-// scrapers/shared/src/queue.ts
-import { Redis } from 'ioredis'
+// scrapers/adzuna/src/scraper.ts
+import type { ScrapeTask, RawJob } from '@jobs-avocado/scraper-shared'
 
-const redis = new Redis(process.env.REDIS_URL!)
-
-export async function readTask(stream: string): Promise<ScrapeTask> {
-  const [[, entries]] = await redis.xread('BLOCK', 5000, 'STREAMS', stream, '$')
-  return JSON.parse(entries[0][1][1]) as ScrapeTask
-}
-
-export async function publishJob(job: RawJob): Promise<void> {
-  await redis.xadd('stream:raw_jobs', '*', 'payload', JSON.stringify(job))
+export async function scrape(task: ScrapeTask): Promise<RawJob[]> {
+  const response = await fetch(
+    `https://api.adzuna.com/v1/api/jobs/${task.country}/search/1?` +
+    new URLSearchParams({ what: task.keywords, where: task.location }),
+    { headers: { 'X-Api-Key': process.env.ADZUNA_API_KEY! } }
+  )
+  const data = await response.json()
+  return data.results.map((r: any) => ({
+    source: 'adzuna',
+    sourceUrl: r.redirect_url,
+    title: r.title,
+    company: r.company.display_name,
+    location: r.location.display_name,
+    description: r.description,
+    salary: r.salary_min ? `${r.salary_min}–${r.salary_max}` : undefined,
+    postedAt: r.created,
+    userId: task.userId,
+  }))
 }
 ```
 
-```typescript
-// scrapers/linkedin/src/scraper.ts
-import { chromium } from 'playwright'
-import { readTask, publishJob } from '@jobs-avocado/scraper-shared'
+### Camoufox decision
 
-const TASK_STREAM = 'stream:scrape:linkedin'
+The original plan used `chromium.connectOverCDP('http://camoufox:9222')` to connect Playwright to a Camoufox sidecar. **This approach is not viable.** Playwright's `connectOverCDP` is Chromium-only (confirmed in Playwright v1.58 docs), and Camoufox is Firefox-based — these are fundamentally incompatible at the protocol level. Additionally, Camoufox explicitly warns against using CDP as it reveals automation nature and exposes `navigator.webdriver`.
 
-async function main() {
-  const browser = await chromium.connectOverCDP('http://camoufox:9222')
-  while (true) {
-    const task = await readTask(TASK_STREAM)
-    for await (const job of scrapeLinkedIn(browser, task)) {
-      await publishJob(job)
-    }
-  }
-}
+Camoufox's native API is Python-based (`camoufox.sync_api` / `camoufox.async_api`), which would require adding a Python layer to the scraper stack.
 
-main()
+**Chosen alternative:** `playwright-extra` with the stealth plugin for Chromium-based anti-detection. This keeps the entire scraper stack in TypeScript, avoids the CDP/Firefox protocol mismatch, and provides sufficient fingerprint evasion for most job boards. If a specific board proves resistant, a Python-based Camoufox adapter can be added as a targeted solution in Phase 2 without affecting the rest of the pipeline.
+
+### Resume builder — Reactive Resume v5 integration
+
+Rather than building a resume builder from scratch (estimated 4–6 weeks), Jobs Avocado integrates [Reactive Resume v5](https://rxresu.me) as a microservice. This is the single highest-impact streamlining decision.
+
+**Why RxResume is an ideal fit:**
+
+| Dimension | RxResume v5 | Jobs Avocado | Compatible? |
+|---|---|---|---|
+| Auth | Own auth system + custom OAuth/OIDC | Better Auth | SSO via OIDC provider config |
+| Database | PostgreSQL | PostgreSQL (sqlc) | Same DB engine |
+| Deployment | Docker Compose | Docker Compose | Add as service |
+| Resume storage | JSON schema (published at rxresu.me/schema.json) | JSONB column | Adopt RxResume's schema |
+| PDF generation | Headless Chromium (Browserless) | N/A (delegated) | RxResume handles this |
+| AI integration | MCP server at `/mcp` | Internal AI layer | Can use RxResume MCP for AI editing |
+| Licence | MIT | AGPL-3.0 | MIT is AGPL-compatible |
+
+**Note on auth:** RxResume v5 uses its own auth system (not Better Auth), secured by an `AUTH_SECRET` env var. It supports Google, GitHub, and custom OAuth/OIDC providers. For SSO between Jobs Avocado and RxResume, configure RxResume's custom OAuth provider to point at Jobs Avocado's Better Auth OIDC endpoint — this way users authenticate once and get access to both systems.
+
+**RxResume v5 capabilities:**
+- Full REST API: `POST /resumes`, `GET /resumes/{id}/pdf`, JSON Patch updates
+- API key auth (`x-api-key` header) for programmatic access
+- MCP server endpoint at `/mcp` for AI-assisted resume editing
+- 13+ built-in templates with CSS customisation, colour/typography control
+- Self-hosts as 3 containers: app + PostgreSQL + Chromium printer
+- Published JSON schema with sections for experience, education, skills, projects, custom sections
+- Custom OAuth/OIDC provider support (Google, GitHub, or any OIDC-compliant provider)
+- Health check at `/api/health`
+- Optional S3-compatible storage (falls back to local filesystem)
+
+**Integration approach:**
+
 ```
+Phase 1: Microservice composition
+├── Add RxResume as a Docker Compose service (app + printer)
+├── Share PostgreSQL instance (separate database) or use RxResume's own DB
+├── Jobs Avocado Go API proxies resume operations via RxResume REST API
+├── Store RxResume user API keys in Jobs Avocado's user_api_keys table
+├── Link resume IDs to job applications (existing jobs.resume_id column)
+└── PDF export calls RxResume's GET /resumes/{id}/pdf endpoint
+
+Phase 2: Deeper integration
+├── SSO via OIDC: configure RxResume custom OAuth to use Jobs Avocado's Better Auth as provider
+├── AI resume tailoring via RxResume MCP endpoint or JSON Patch API
+├── Resume version tracking: snapshot RxResume JSON on application submit
+└── ATS scoring: fetch resume JSON from RxResume, compare against JD
+```
+
+**What this eliminates from the build:**
+- Resume data model design (use RxResume's published schema)
+- Live preview rendering engine
+- Drag-and-drop section reordering
+- PDF generation infrastructure (Puppeteer/Chromium)
+- Template library (13+ templates included)
+- Version history UI (RxResume handles this)
+
+**What Jobs Avocado still owns:**
+- Resume-to-application linking (which version was submitted where)
+- AI-powered resume tailoring suggestions (Jobs Avocado AI → RxResume API/MCP)
+- ATS keyword scoring (reads resume JSON, compares to JD)
+- Resume A/B analytics (response rate by version)
+
+**Trade-offs:**
+- No DOCX export (RxResume supports PDF + JSON only) — can add via `docx.js` in Jobs Avocado's worker
+- Adds 2 containers to the stack (RxResume app + Chromium printer) — but removes the need for Jobs Avocado's own Puppeteer
+- RxResume's template customisation is CSS-based, not a visual editor — sufficient for most users
+- Users see RxResume's UI for resume editing (can be embedded via iframe or linked) — not a fully seamless experience without deeper integration
+- Auth is separate (RxResume has its own auth system) — Phase 2 SSO via OIDC bridges this gap
 
 ### Language summary
 
 | Service | Language | Key libraries |
 |---|---|---|
-| `apps/web` | TypeScript | Next.js 15, Tailwind, TanStack Query, shadcn/ui |
-| `apps/api` | Go | Gin, sqlc, golang-migrate, aws-sdk-go-v2 |
-| `apps/worker` | Go | Asynq, aws-sdk-go-v2 |
-| `scrapers/*` | TypeScript | Playwright, ioredis, fetch |
-| `scrapers/shared` | TypeScript | ioredis, shared types |
+| `apps/web` | TypeScript | Next.js 16, Tailwind CSS v4, TanStack Query v5, shadcn/ui |
+| `apps/api` | Go | Gin v1.10, sqlc v1.30, golang-migrate v4.18 |
+| `apps/worker` | Go | Asynq v0.28 |
+| `internal/` | Go | AI provider abstraction, crypto |
+| `scrapers/*` | TypeScript | Playwright v1.58, playwright-extra, fetch |
+| `scrapers/shared` | TypeScript | Shared types |
 | `apps/docs` | TypeScript | Docusaurus |
 
 ---
@@ -263,77 +348,94 @@ main()
                            │ HTTPS
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                    Next.js (apps/web)                           │
-│          Server components · App Router · Better Auth           │
-│          Issues JWTs · Publishes JWKS at /.well-known/jwks.json │
+│          Server components · App Router · Better Auth v1.3      │
+│          Issues JWTs via JWT plugin                              │
+│          Publishes JWKS at /api/auth/jwks                       │
 └───────┬─────────────────────────────────────────────────────────┘
-        │ HTTP + SSE (packages/api-client — generated from OpenAPI spec)
+        │ HTTP + SSE (fetch wrapper + Zod validation)
 ┌───────▼──────────────────────────────────────────────────────────┐
 │                    Go API (apps/api)                             │
-│          Gin · oapi-codegen · sqlc · JWT validation              │
+│          Gin v1.10 · oapi-codegen · sqlc · JWT validation        │
+│          SSE via Redis Pub/Sub subscription (sse:{userID})       │
 ├─────────────────────────┬────────────────────────────────────────┤
-│  PostgreSQL             │  Redis (rate limiting + Asynq queues)  │
-│  S3-compatible storage  │                                        │
+│  PostgreSQL 16          │  Redis 7 (rate limiting + Asynq queues │
+│  S3-compatible storage  │          + Pub/Sub for SSE delivery)   │
 └───────┬─────────────────┴────────────────────────────────────────┘
         │ Asynq task enqueue (Redis)
 ┌───────▼──────────────────────────────────────────────────────────┐
 │                  Go worker (apps/worker)                         │
-│                  Asynq · task handlers · cron scheduler          │
+│                  Asynq v0.28 · task handlers · cron scheduler    │
+│                  Publishes SSE events via Redis Pub/Sub          │
 │                                                                  │
 │  job:extract · job:score · resume:tailor · pdf:generate          │
 │  email:poll  · webhook:deliver · backup:daily                    │
 └───────┬──────────────────────────────────────────────────────────┘
-        │ Redis Streams
-        │   XADD stream:scrape:<board>  →  scrape tasks out
-        │   XREAD stream:raw_jobs       ←  RawJob results in
+        │ HTTP calls to scraper services
+        │   POST /scrape → returns RawJob[]
         │
 ┌───────▼──────────────────────────────────────────────────────────┐
-│              TypeScript scraper containers (scrapers/)           │
+│              TypeScript scraper services (scrapers/)             │
+│              Stateless HTTP endpoints                            │
 │                                                                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────┐ │
 │  │  linkedin/  │  │  indeed/    │  │  adzuna/                 │ │
 │  │  Playwright │  │  Playwright │  │  fetch() — no browser    │ │
-│  │  + Camoufox │  │  (direct)   │  │  (Adzuna REST API)       │ │
-│  └──────┬──────┘  └─────────────┘  └──────────────────────────┘ │
-│         │ CDP                                                     │
-│  ┌──────┴───────────────────────────────────────────────────┐    │
+│  │  + stealth  │  │  (direct)   │  │  (Adzuna REST API)       │ │
+│  └─────────────┘  └─────────────┘  └──────────────────────────┘ │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐    │
 │  │           scrapers/shared (Turborepo package)            │    │
-│  │   RawJob · ScrapeTask types · ioredis queue client       │    │
+│  │   RawJob · ScrapeTask types                              │    │
 │  └──────────────────────────────────────────────────────────┘    │
-└─────────┬────────────────────────────────────────────────────────┘
-          │ CDP (Chrome DevTools Protocol)
-          │ (only scrapers that use Camoufox connect here)
-┌─────────▼────────────────┐
-│  Camoufox sidecar        │
-│  Headless Firefox pool   │
-│  Anti-bot fingerprinting │
-└──────────────────────────┘
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│              Reactive Resume v5 (resume-builder)                 │
+│              amruthpillai/reactive-resume:latest                 │
+│              REST API · 13 templates · PDF via Chromium printer  │
+├──────────────────────────────────────────────────────────────────┤
+│              Chromium printer (resume-printer)                   │
+│              ghcr.io/browserless/chromium:latest                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### SSE delivery: Redis Pub/Sub bridge
+
+When the Go worker completes an async task (AI scoring, JD extraction, etc.), it publishes an event to the Redis Pub/Sub channel `sse:{userID}`. The Go API subscribes to this channel per connected SSE client and forwards events to the browser. This solves the delivery gap between background task completion and the API's SSE connections without requiring the worker and API to share process memory.
+
+```go
+// Worker publishes after task completion
+redis.Publish(ctx, fmt.Sprintf("sse:%s", userID), eventJSON)
+
+// API subscribes per SSE client connection
+sub := redis.Subscribe(ctx, fmt.Sprintf("sse:%s", userID))
+for msg := range sub.Channel() {
+    c.SSEvent("message", msg.Payload)
+    c.Writer.Flush()
+}
 ```
 
 ### Request flow: adding a job manually
 
 1. User pastes a job description into the manual import panel (browser)
-2. Next.js calls Go API: `POST /api/v1/jobs/import` (generated typed client)
+2. Next.js calls Go API: `POST /api/v1/jobs/import` (typed fetch wrapper)
 3. Gin handler validates the request body (oapi-codegen types), writes a `discovered` job record via sqlc
 4. Handler enqueues an Asynq task: `{ type: "job:extract", jobID, rawText }`
-5. Go worker picks up the task, calls the configured LLM provider, parses structured fields
+5. Go worker picks up the task, calls the configured LLM provider via `internal/ai/`, parses structured fields
 6. Worker updates the job record (sqlc), then enqueues a follow-up `job:score` task
-7. Scoring task completes, worker pushes a Server-Sent Event to the client connection
-8. Browser receives the SSE, TanStack Query invalidates the jobs cache, card populates
+7. Scoring task completes, worker publishes SSE event to Redis Pub/Sub (`sse:{userID}`)
+8. API receives Pub/Sub message, forwards via SSE to browser
+9. Browser receives the SSE, TanStack Query invalidates the jobs cache, card populates
 
 ### Request flow: pipeline scrape run
 
 1. User triggers a pipeline run (or cron fires)
 2. Go API enqueues one `scrape:dispatch` task per enabled job board
-3. Go worker picks up each dispatch task, publishes a `ScrapeTask` message to the board's Redis stream
-4. The relevant TypeScript scraper container reads the task, spawns Playwright/Camoufox sessions, fetches listings
-5. Each `RawJob` is published back to a `raw_jobs` Redis stream
-6. Go worker consumes `raw_jobs`, deduplicates, writes `discovered` records to Postgres
-7. Worker enqueues `job:score` tasks for each new job
-8. Scoring completes; SSE pushes pipeline progress updates to the UI in real time
-
-### Configuration: cloud vs self-hosted
-
-The same binary runs in both self-hosted and cloud environments. Configuration differences are controlled entirely by environment variables — see section 10 for self-hosted defaults.
+3. Go worker picks up each dispatch task, sends HTTP `POST /scrape` to the relevant scraper service with the `ScrapeTask` payload
+4. Scraper service fetches job listings (Playwright + stealth or direct API), returns `RawJob[]` in the HTTP response
+5. Go worker deduplicates, writes `discovered` records to Postgres, logs activity to `activity_log`
+6. Worker enqueues `job:score` tasks for each new job
+7. Scoring completes; worker publishes SSE events for pipeline progress updates
 
 ---
 
@@ -348,25 +450,46 @@ users
   email         text unique not null
   name          text
   avatar_url    text
-  created_at    timestamp
-  updated_at    timestamp
+  created_at    timestamptz
+  updated_at    timestamptz
 
--- User AI settings (BYOK keys stored encrypted)
-user_settings
+-- Custom stages (supports renameable/reorderable Kanban columns)
+stages
+  id            uuid primary key
   user_id       uuid references users
-  ai_provider   text          -- 'openai' | 'anthropic' | 'openrouter' | 'ollama'
-  ai_api_key    text          -- encrypted at rest; null if using managed AI
+  name          text not null
+  position      int not null
+  is_terminal   boolean       -- true for "closed" states
+  color         text
+  created_at    timestamptz
+
+-- User settings
+user_settings
+  user_id       uuid references users (PK)
+  ai_provider   text          -- 'openai' | 'ollama'
   ai_model      text          -- optional model override
   writing_style text          -- 'professional' | 'conversational' | 'formal'
   weekly_goal   int           -- applications per week target
+  task_models   jsonb         -- per-task model routing overrides
+  created_at    timestamptz
+  updated_at    timestamptz
+
+-- User API keys (per-provider, encrypted — replaces single ai_api_key column)
+user_api_keys
+  id            uuid primary key
+  user_id       uuid references users
+  provider      text          -- 'openai' | 'openrouter' | 'ollama' | etc.
+  api_key       text          -- encrypted at rest (AES-256-GCM)
+  created_at    timestamptz
+  UNIQUE(user_id, provider)
 
 -- Organisations (B2B tier)
 organisations
   id            uuid primary key
   name          text
   slug          text unique
-  plan          text          -- 'free' | 'pro' | 'team' | 'enterprise'
-  created_at    timestamp
+  plan          text          -- 'pro' | 'team' | 'enterprise'
+  created_at    timestamptz
 
 -- Organisation members
 org_members
@@ -384,7 +507,7 @@ companies
   size          text
   interest      int           -- 1–5 user rating
   notes         text
-  created_at    timestamp
+  created_at    timestamptz
 
 -- Contacts (networking CRM)
 contacts
@@ -398,30 +521,32 @@ contacts
   source        text          -- 'referral' | 'cold' | 'event' | 'recruiter'
   status        text          -- 'to_reach' | 'reached' | 'warm' | 'met'
   notes         text
-  last_contact  timestamp
+  last_contact  timestamptz
 
--- Resumes
+-- Resumes (metadata — content lives in RxResume)
 resumes
   id            uuid primary key
   user_id       uuid references users
   name          text not null  -- e.g. "v3 — Growth role"
-  content       jsonb not null -- resume data model
+  rxresume_id   text           -- ID in Reactive Resume instance
+  content       jsonb          -- snapshot of RxResume JSON at submission time
   is_base       boolean        -- true for the default template
-  created_at    timestamp
-  updated_at    timestamp
+  created_at    timestamptz
+  updated_at    timestamptz
 
--- Resume history (for restore)
+-- Resume history (for restore — snapshots from RxResume)
 resume_versions
   id            uuid primary key
   resume_id     uuid references resumes
   content       jsonb not null
-  created_at    timestamp
+  created_at    timestamptz
 
 -- Job applications
 jobs
   id            uuid primary key
   user_id       uuid references users
   company_id    uuid references companies
+  stage_id      uuid references stages  -- custom Kanban column position
   title         text not null
   status        text          -- state machine: discovered|saved|ready|applied|interviewing|offer|closed
   close_reason  text          -- rejected|withdrew|declined|ghosted
@@ -438,10 +563,10 @@ jobs
   resume_id     uuid references resumes  -- version submitted
   jd_raw        text          -- original job description text
   jd_snapshot   jsonb         -- parsed structured JD (archived)
-  applied_at    timestamp
-  follow_up_at  timestamp
-  created_at    timestamp
-  updated_at    timestamp
+  applied_at    timestamptz
+  follow_up_at  timestamptz
+  created_at    timestamptz
+  updated_at    timestamptz
 
 -- Interview rounds
 interview_rounds
@@ -449,8 +574,8 @@ interview_rounds
   job_id        uuid references jobs
   round         int
   type          text          -- phone|technical|system_design|cultural|panel
-  scheduled_at  timestamp
-  completed_at  timestamp
+  scheduled_at  timestamptz
+  completed_at  timestamptz
   interviewer_id uuid references contacts
   notes         text
   outcome       text          -- passed|failed|pending
@@ -463,7 +588,7 @@ job_assets
   content       text
   storage_key   text          -- S3 key for binary assets
   model_used    text
-  created_at    timestamp
+  created_at    timestamptz
 
 -- Ghostwriter conversations
 ghostwriter_messages
@@ -471,7 +596,7 @@ ghostwriter_messages
   job_id        uuid references jobs
   role          text          -- 'user' | 'assistant'
   content       text
-  created_at    timestamp
+  created_at    timestamptz
 
 -- Offers
 offers
@@ -482,7 +607,7 @@ offers
   equity        text
   bonus         text
   benefits      jsonb
-  deadline      timestamp
+  deadline      timestamptz
   accepted      boolean
   negotiation_log jsonb       -- [{date, action, note}]
 
@@ -496,7 +621,7 @@ email_events
   confidence    float
   confirmed     boolean       -- user confirmed the routing
   raw_snippet   text          -- short excerpt shown in Tracking Inbox
-  created_at    timestamp
+  created_at    timestamptz
 
 -- Webhooks (user-configured)
 webhooks
@@ -506,13 +631,64 @@ webhooks
   events        text[]        -- ['job.applied', 'job.interviewing', ...]
   secret        text          -- HMAC signing secret
   active        boolean
+
+-- Tags (polymorphic labeling)
+tags
+  id            uuid primary key
+  user_id       uuid references users
+  name          text
+  color         text
+  UNIQUE(user_id, name)
+
+-- Tag assignments
+taggings
+  tag_id        uuid references tags
+  entity_type   text          -- 'job' | 'contact' | 'resume' | 'company'
+  entity_id     uuid
+  PRIMARY KEY (tag_id, entity_type, entity_id)
+
+-- Activity log (audit trail for timeline view + B2B compliance)
+activity_log
+  id            uuid primary key
+  user_id       uuid references users
+  entity_type   text          -- 'job' | 'contact' | 'resume' | 'company'
+  entity_id     uuid
+  action        text          -- 'created' | 'status_changed' | 'scored' | 'note_added'
+  old_value     jsonb
+  new_value     jsonb
+  created_at    timestamptz
 ```
+
+### Schema additions rationale
+
+The following tables were added to the original schema based on feasibility assessment:
+
+| Table | Why | When needed |
+|---|---|---|
+| `stages` | `jobs.status` as a text field cannot support custom Kanban columns (a promised feature). Users need to rename, reorder, and add columns. | Phase 1 |
+| `activity_log` | Required for the timeline view, B2B audit compliance, and debugging. Painful to add retroactively because historical events are lost. | Phase 1 |
+| `tags` + `taggings` | Users will want custom categorisation across jobs, contacts, and companies. Polymorphic tagging via `entity_type` + `entity_id`. | Phase 1 |
+| `user_api_keys` | The original single `ai_api_key` column on `user_settings` means switching providers loses the previous key. A separate table keyed by provider preserves all keys. | Phase 1 |
+
+### Default stages
+
+When a new user is created, the application seeds default stages:
+
+| Position | Name | Terminal? |
+|---|---|---|
+| 0 | Saved | No |
+| 1 | Applied | No |
+| 2 | Interviewing | No |
+| 3 | Offer | No |
+| 4 | Closed | Yes |
+
+Users can rename, reorder, add, or remove stages. The `status` field on `jobs` continues to power the state machine for automation; `stage_id` determines the visual Kanban column position.
 
 ### Multi-tenancy strategy
 
 Self-hosted: single-tenant. All queries implicitly scope to the single `user_id`.
 
-Cloud (multi-tenant): row-level security (RLS) in Postgres enforces tenant isolation. Every table has a `user_id` column. A session variable `app.current_user_id` is set at connection time, and RLS policies enforce `user_id = current_setting('app.current_user_id')`. No application-layer tenant filtering required — the database enforces it.
+Multi-tenant mode (`MULTI_TENANT=true`): row-level security (RLS) in Postgres enforces tenant isolation. Every table has a `user_id` column. A session variable `app.current_user_id` is set at connection time, and RLS policies enforce `user_id = current_setting('app.current_user_id')`. No application-layer tenant filtering required — the database enforces it.
 
 Organisation (B2B) data lives in a parallel schema with `org_id` scoping and role-based access via `org_members`.
 
@@ -520,7 +696,7 @@ Organisation (B2B) data lives in a parallel schema with `org_id` scoping and rol
 
 ## 6. Authentication & multi-tenancy
 
-### Better Auth (Next.js)
+### Better Auth v1.3 (Next.js)
 
 [Better Auth](https://www.better-auth.com) is an open-source TypeScript authentication library that runs as middleware within the Next.js app. It owns the full auth surface:
 
@@ -529,11 +705,32 @@ Organisation (B2B) data lives in a parallel schema with `org_id` scoping and rol
 - Database-backed sessions
 - Email verification and password reset flows
 
-Better Auth issues signed JWTs on successful authentication and publishes its public key at `/.well-known/jwks.json`.
+**JWT plugin configuration (required):** Better Auth defaults to database-backed cookies, not JWTs. The JWT bearer plugin must be explicitly enabled to issue JWTs and expose a JWKS endpoint. This is configured via:
+
+```typescript
+// apps/web/src/lib/auth-server.ts
+import { betterAuth } from 'better-auth'
+import { jwt } from 'better-auth/plugins'
+
+export const auth = betterAuth({
+  // ... database, providers config ...
+  plugins: [
+    jwt({
+      jwks: {
+        keyPairConfig: { alg: 'EdDSA' }  // Ed25519 keys
+      }
+    })
+  ]
+})
+```
+
+This exposes:
+- `POST /api/auth/token` — issues a JWT for the authenticated session
+- `GET /api/auth/jwks` — public JWKS endpoint for token verification
 
 ### Go API — stateless JWT validation
 
-The Go API never contacts the auth service to validate requests. Every incoming request carries a JWT in the `Authorization: Bearer` header. Gin middleware fetches the JWKS from Next.js on startup (cached with a 1-hour TTL) and validates tokens locally using `golang-jwt/jwt`.
+The Go API never contacts the auth service to validate requests. Every incoming request carries a JWT in the `Authorization: Bearer` header. Gin middleware fetches the JWKS from Next.js on startup (cached with a 1-hour TTL) and validates tokens locally using `golang-jwt/jwt` with `createRemoteJWKSet` from the `jose` library.
 
 ```go
 // apps/api/internal/middleware/auth.go
@@ -554,7 +751,7 @@ func AuthMiddleware(jwksURL string) gin.HandlerFunc {
 
 This keeps the Go API fully stateless — it can scale horizontally without sticky sessions or shared auth state.
 
-### Cloud multi-tenancy additions
+### Optional multi-tenancy
 
 The codebase supports an optional multi-tenant mode (`MULTI_TENANT=true`) for teams or hosted deployments. When disabled (the default), all queries scope to the single user.
 
@@ -562,10 +759,12 @@ The codebase supports an optional multi-tenant mode (`MULTI_TENANT=true`) for te
 
 ## 7. AI integration layer
 
-The AI abstraction lives in `apps/api/internal/ai/` and `apps/worker/internal/ai/` — plain Go packages. The interface is simple:
+The AI abstraction lives in `internal/ai/` — a shared Go module imported by both the API and worker. This avoids code duplication and ensures a single change to the provider interface or a prompt template propagates to both services.
+
+### Provider interface
 
 ```go
-// apps/api/internal/ai/provider.go
+// internal/ai/provider.go
 
 type CompletionRequest struct {
     SystemPrompt string
@@ -586,23 +785,48 @@ type Provider interface {
 
 func NewProvider(cfg ProviderConfig) (Provider, error) {
     switch cfg.Provider {
-    case "openai":     return newOpenAIProvider(cfg)
-    case "anthropic":  return newAnthropicProvider(cfg)
-    case "openrouter": return newOpenRouterProvider(cfg)
-    case "gemini":     return newGeminiProvider(cfg)
-    case "ollama":     return newOllamaProvider(cfg)   // local; no API key
+    case "openai":  return newOpenAIProvider(cfg)  // OpenAI-compatible (covers OpenAI, OpenRouter, Anthropic via OpenRouter)
+    case "ollama":  return newOllamaProvider(cfg)  // local models, also OpenAI-compatible API
     default:
         return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)
     }
 }
 ```
 
-Every AI feature calls `NewProvider(userConfig)` — which resolves to the user's BYOK key if set, or the platform's managed key if not. The feature code never knows which is in use.
+### Why only 2 provider implementations
+
+The original plan called for 5 separate provider implementations (OpenAI, Anthropic, OpenRouter, Gemini, Ollama). This is reduced to 2:
+
+- **OpenAI-compatible** — covers OpenAI directly, plus Anthropic, Gemini, and 100+ other models via OpenRouter (which uses the OpenAI API format). Users set a different `base_url` in their API key config to target OpenRouter.
+- **Ollama** — local models with zero API key requirement. Also uses the OpenAI-compatible `/v1/chat/completions` endpoint, so the implementation wraps the OpenAI provider with a different default base URL (`http://ollama:11434`).
+
+This delivers identical model coverage with 60% less implementation work. Native Anthropic/Gemini providers should only be added if users report latency or feature gaps from OpenRouter passthrough.
+
+### Prompts as embedded files
+
+All prompts live in `internal/ai/prompts/` as `.txt` files loaded via Go's `embed.FS`. This makes prompts accessible to non-Go contributors and easier to iterate on than Go string constants.
+
+```go
+// internal/ai/prompts/embed.go
+package prompts
+
+import "embed"
+
+//go:embed *.txt
+var promptFS embed.FS
+
+func GetPrompt(name string) (string, error) {
+    data, err := promptFS.ReadFile(name + ".txt")
+    return string(data), err
+}
+```
+
+Prompt templates use Go `text/template` syntax for dynamic values (`{{.Resume}}`, `{{.JobDescription}}`). XML delimiters in prompts prevent prompt injection from user-supplied content.
 
 ### Provider resolution order
 
 ```
-1. User BYOK key (decrypted from user_settings at request time)
+1. User BYOK key (decrypted from user_api_keys at request time)
 2. Organisation key  (B2B tier: org may supply a shared key)
 3. Platform default key (optional; set via AI_API_KEY env var)
 4. Error → prompt user to configure a key in settings
@@ -625,30 +849,6 @@ Power users assign different models to different tasks via the settings UI, stor
 
 The worker resolves the model per task type before calling `NewProvider`.
 
-### Prompts
-
-All prompts live in `apps/api/internal/ai/prompts/` and `apps/worker/internal/ai/prompts/` as Go string constants. They are plain text with Go template substitution for dynamic values:
-
-```go
-// apps/worker/internal/ai/prompts/suitability.go
-const SuitabilityPrompt = `
-You are evaluating job fit for a candidate.
-
-<resume>
-{{.Resume}}
-</resume>
-
-<job_description>
-{{.JobDescription}}
-</job_description>
-
-Score the candidate's suitability for this role from 0–100.
-Return JSON only: {"score": <int>, "reason": "<one sentence>"}
-`
-```
-
-All prompts are open source and auditable. XML delimiters prevent prompt injection from user-supplied content.
-
 ---
 
 ## 8. Job discovery pipeline
@@ -660,78 +860,69 @@ The discovery pipeline is optional and opt-in. Users who drive job search manual
 ```
 trigger (scheduled cron or manual run from UI)
   → Go API enqueues scrape:dispatch tasks (one per enabled source)
-  → Go worker publishes ScrapeTask to source-specific Redis stream
-      e.g. XADD stream:scrape:linkedin * user_id <uid> keywords "software engineer" location "London"
-  → TypeScript scraper container reads from its stream (XREAD with blocking)
-  → Scraper fetches job listings (Playwright + Camoufox or direct API)
-  → Scraper publishes RawJob to shared stream: XADD stream:raw_jobs * ...
-  → Go worker reads stream:raw_jobs
-      → deduplicates (source URL + title+company hash)
-      → writes discovered job records to Postgres (sqlc)
-      → enqueues job:score tasks for new jobs
+  → Go worker picks up each dispatch task
+  → Worker sends HTTP POST to scraper service: POST /scrape with ScrapeTask body
+  → Scraper service fetches job listings (Playwright + stealth or direct API)
+  → Scraper returns RawJob[] in HTTP response
+  → Go worker deduplicates (source URL + title+company hash)
+  → Worker writes discovered job records to Postgres (sqlc)
+  → Worker logs to activity_log table
+  → Worker enqueues job:score tasks for new jobs
   → Asynq scoring tasks run concurrently
       → each calls the AI provider with user resume + JD
       → writes suitability score + reason back to Postgres
-  → SSE push notifies the browser: pipeline progress, new job count
+  → Worker publishes SSE events via Redis Pub/Sub
+  → API forwards SSE to browser: pipeline progress, new job count
 ```
 
-### Scraper container interface
+### Scraper service interface
 
-Each scraper is a standalone TypeScript service with a consistent entrypoint. The `scrapers/shared` package provides the types and Redis client, imported via the Turborepo workspace:
+Each scraper exposes a single HTTP endpoint. The Go worker calls it with a `ScrapeTask` payload and receives `RawJob[]` synchronously:
 
 ```typescript
-// scrapers/glassdoor/src/scraper.ts
-import { chromium } from 'playwright'
-import { readTask, publishJob, type ScrapeTask, type RawJob } from '@jobs-avocado/scraper-shared'
+// scrapers/linkedin/src/scraper.ts
+import { chromium } from 'playwright-extra'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+import type { ScrapeTask, RawJob } from '@jobs-avocado/scraper-shared'
+import { serve } from '@hono/node-server'
+import { Hono } from 'hono'
 
-const TASK_STREAM = 'stream:scrape:glassdoor'
+chromium.use(StealthPlugin())
 
-async function* scrapeGlassdoor(
-  browser: import('playwright').Browser,
-  task: ScrapeTask
-): AsyncGenerator<RawJob> {
-  const page = await browser.newPage()
-  // ... navigation and parsing logic
-  yield {
-    source: 'glassdoor',
-    sourceUrl: url,
-    title, company, location, description,
-    userId: task.userId,
-  }
-  await page.close()
-}
+const app = new Hono()
 
-async function main() {
-  // Connect to shared Camoufox sidecar via CDP
-  const browser = await chromium.connectOverCDP('http://camoufox:9222')
-  while (true) {
-    const task = await readTask(TASK_STREAM)
-    for await (const job of scrapeGlassdoor(browser, task)) {
-      await publishJob(job)
+app.post('/scrape', async (c) => {
+  const task = await c.req.json<ScrapeTask>()
+  const browser = await chromium.launch({ headless: true })
+  const jobs: RawJob[] = []
+
+  try {
+    const page = await browser.newPage()
+    // ... navigation and parsing logic
+    for (const listing of await parseListings(page, task)) {
+      jobs.push({
+        source: 'linkedin',
+        sourceUrl: listing.url,
+        title: listing.title,
+        company: listing.company,
+        location: listing.location,
+        description: listing.description,
+        userId: task.userId,
+      })
     }
+  } finally {
+    await browser.close()
   }
-}
 
-main().catch(console.error)
+  return c.json(jobs)
+})
+
+serve({ fetch: app.fetch, port: 3001 })
 ```
 
 ### Adding a new scraper
 
-Create `scrapers/<board>/`, implement `src/scraper.ts` reading from `stream:scrape:<board>` and writing `RawJob` objects to `stream:raw_jobs` via the shared queue client. Add a `package.json` (importing `@jobs-avocado/scraper-shared`), a `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Add the service to `docker-compose.yml`. No other file in the repo changes — Turborepo picks up the new package automatically.
-
-### Camoufox sidecar
-
-LinkedIn, Glassdoor, and other bot-hostile boards require a humanised browser. Camoufox runs as a single shared sidecar container exposing a CDP endpoint. TypeScript scrapers connect to it via Playwright's `connectOverCDP`:
-
-```typescript
-// For bot-hostile boards
-const browser = await chromium.connectOverCDP('http://camoufox:9222')
-
-// For simpler boards — launch a lightweight Chromium directly
-const browser = await chromium.launch({ headless: true })
-```
-
-Scrapers that use direct `fetch()` (Adzuna, The Muse) import neither Playwright nor Camoufox and do not depend on the sidecar container.
+Create `scrapers/<board>/`, implement an HTTP server with a `POST /scrape` endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add a `package.json` (importing `@jobs-avocado/scraper-shared`), a `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Add the service to `docker-compose.yml`. No other file in the repo changes — Turborepo picks up the new package automatically.
 
 ### Deduplication
 
@@ -751,7 +942,7 @@ The Smart Router requires Gmail read access via OAuth 2.0. Scopes requested:
 - `gmail.readonly` — read email metadata and body
 - No `gmail.send`, no `gmail.modify` — the app never sends email or modifies inbox state
 
-The OAuth token is stored encrypted in `user_settings`. On the cloud, the OAuth callback runs through the platform's registered app. Self-hosters must create their own Google Cloud project and register OAuth credentials — documented in the self-hosting guide.
+The OAuth token is stored encrypted in `user_api_keys` (provider = `gmail`). Users must create their own Google Cloud project and register OAuth credentials — documented in the self-hosting guide.
 
 ### Email parsing pipeline
 
@@ -763,7 +954,8 @@ Asynq cron job: email:poll (every 5 min, Go worker)
       → call AI provider with Smart Router prompt
           → returns: { intent, company_match, confidence }
       → write email_event record (sqlc)
-      → if confidence > threshold: push to Tracking Inbox via SSE
+      → log to activity_log
+      → if confidence > threshold: push to Tracking Inbox via SSE (Redis Pub/Sub)
 ```
 
 ### Tracking Inbox
@@ -795,32 +987,78 @@ The canonical self-hosted deployment is a single `docker compose up` command. Se
 
 ```yaml
 services:
-  web:        # Next.js (auth + frontend)
-  api:        # Go API (Gin)
-  worker:     # Go worker (Asynq — handles AI tasks + backups)
-  postgres:   # PostgreSQL 16
-  redis:      # Redis 7 (Asynq queues + rate limiting)
-  minio:      # S3-compatible storage (optional; use local filesystem to skip)
+  web:              # Next.js (auth + frontend)
+  api:              # Go API (Gin)
+  worker:           # Go worker (Asynq — handles AI tasks + backups)
+  postgres:         # PostgreSQL 16
+  redis:            # Redis 7 (Asynq queues + rate limiting + Pub/Sub)
+  migrate:          # Init container (golang-migrate — exits after migration)
+  resume-builder:   # Reactive Resume v5 (REST API + UI)
+  resume-printer:   # Chromium (PDF generation for RxResume)
 ```
 
 **Full stack** (`docker-compose.yml`) — adds pipeline:
 
 ```yaml
 # extends minimal, adds:
-  scraper-linkedin:   # TypeScript — LinkedIn (Playwright + Camoufox)
+  scraper-linkedin:   # TypeScript — LinkedIn (Playwright + stealth)
   scraper-indeed:     # TypeScript — Indeed (Playwright)
-  scraper-glassdoor:  # TypeScript — Glassdoor (Playwright + Camoufox)
+  scraper-glassdoor:  # TypeScript — Glassdoor (Playwright + stealth)
   scraper-adzuna:     # TypeScript — Adzuna API (fetch)
-  camoufox:           # Shared headless Firefox pool
 ```
 
-Self-hosters enable only the scrapers they need. The scrapers are opt-in — the minimal stack runs without them.
+Self-hosters enable only the scrapers they need. The scrapers are opt-in — the minimal stack runs without them. For simpler deployments, a single combined scraper container dispatches internally by board type.
+
+### RxResume Docker Compose services
+
+```yaml
+# Added to docker-compose.yml / docker-compose.minimal.yml
+services:
+  # ... existing services ...
+
+  resume-builder:
+    image: amruthpillai/reactive-resume:latest
+    restart: unless-stopped
+    environment:
+      - APP_URL=${RESUME_BUILDER_URL:-http://localhost:3010}
+      - PRINTER_APP_URL=http://resume-builder:3000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/rxresume
+      - PRINTER_ENDPOINT=ws://resume-printer:3000
+      - AUTH_SECRET=${RXRESUME_AUTH_SECRET}  # separate from Jobs Avocado's BETTER_AUTH_SECRET
+    ports:
+      - "3010:3000"
+    volumes:
+      - rxresume_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      resume-printer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  resume-printer:
+    image: ghcr.io/browserless/chromium:latest
+    restart: unless-stopped
+    environment:
+      - HEALTH=true
+      - CONCURRENT=10
+      - QUEUED=5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/pressure"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+```
 
 Resource requirements:
 
 | Configuration | vCPU | RAM | Storage |
 |---|---|---|---|
-| Minimal (no pipeline) | 1 | 512MB | 5GB |
+| Minimal (no pipeline) | 1 | 1GB | 5GB |
 | Full stack with 2 scrapers | 2 | 2GB | 20GB |
 
 Tested on: Hetzner CX11 (€3.79/mo), DigitalOcean Basic ($6/mo), Oracle Cloud Free tier.
@@ -836,6 +1074,12 @@ DATABASE_URL=postgres://jobs-avocado:password@postgres:5432/jobs-avocado
 # Auth
 BETTER_AUTH_SECRET=<random 32-char string>
 NEXTAUTH_URL=http://localhost:3000
+
+# API encryption (for BYOK key storage)
+API_ENCRYPTION_KEY=<random 32-char string>
+
+# Resume builder
+RESUME_BUILDER_URL=http://localhost:3010
 
 # Optional: AI (BYOK)
 # Leave blank to require users to supply their own keys in settings
@@ -876,92 +1120,65 @@ An Asynq cron task (`backup:daily`, configurable schedule) dumps Postgres using 
 
 ---
 
-## 11. Cloud deployment
+## 11. Phase 1 — Foundation (months 1–6)
 
-The cloud-hosted version runs the same application code with managed infrastructure. Cloud architecture, billing, and deployment details are maintained in internal documentation.
+Goal: a fully functional self-hosted product that solves the core problem completely. No pipeline automation yet.
 
----
-
-## 12. Open core boundary
-
-This is the most critical architectural decision. The wrong boundary kills either the open-source community or the business.
-
-### What is always open source (AGPL)
-
-- Entire application codebase (web, api, worker, all packages)
-- All AI prompts and feature logic
-- All extractor/scraper code
-- Docker Compose self-hosting stack
-- Database schema and migrations
-- Documentation site
-
-### What requires additional configuration
-
-- **Billing integration** (`packages/cloud/billing`) — present in repo, inactive when `BILLING_ENABLED=false`. Requires payment provider keys to activate.
-- **Managed AI key pool** — platform-level API keys. Self-hosters supply their own via BYOK.
-- **Infrastructure-as-code configs** — deployment automation for managed hosting. Not relevant to self-hosters.
-- **Admin tooling** — internal dashboard for managing accounts and viewing aggregate metrics. Not open source; not user-facing.
-
----
-
-## 13. Phase 1 — Foundation (months 1–6)
-
-Goal: a fully functional self-hosted product that solves the core problem completely. No cloud, no billing, no pipeline automation.
+**Timeline: 14–16 weeks** (revised from 13 weeks based on feasibility assessment; the RxResume integration and AI provider reduction recover ~8–10 weeks from the original scope, making this timeline realistic).
 
 ### Milestone 1.1 — Project scaffold (weeks 1–2)
 
-- [ ] Repo structure: `apps/web`, `apps/api`, `apps/worker`, `scrapers/`, `packages/`, `openapi/`
-- [ ] Go workspace (`go.work`) linking `apps/api` and `apps/worker`
-- [ ] Turborepo config for `apps/web`, `scrapers/*`, and `packages/`
+- [ ] Repo structure: `apps/web`, `apps/api`, `apps/worker`, `internal/`, `scrapers/`, `packages/`, `openapi/`
+- [ ] Go workspace (`go.work`) linking `apps/api`, `apps/worker`, and `internal/`
+- [ ] Turborepo v2.8 config for `apps/web`, `scrapers/*`, and `packages/`
 - [ ] `openapi/jobs-avocado.yaml` — initial spec for auth + jobs endpoints
 - [ ] `oapi-codegen` generating Go server interfaces from spec
-- [ ] `openapi-typescript-codegen` generating TypeScript client (`packages/api-client/`)
-- [ ] `sqlc.yaml` config + initial SQL migration files (users, jobs, resumes, companies, contacts)
-- [ ] `golang-migrate` init container in Docker Compose
-- [ ] Docker Compose minimal stack: web + api + worker + postgres + redis
-- [ ] Better Auth: email/password + Google OAuth in Next.js
-- [ ] Go API: JWT validation middleware using JWKS from Next.js
-- [ ] CI: Go vet + test, TypeScript tsc + lint, OpenAPI + sqlc staleness checks
+- [ ] `openapi-typescript` generating TypeScript types (`packages/api-client/`) — types only, no runtime client
+- [ ] `sqlc.yaml` config + initial SQL migration files (all tables including stages, activity_log, tags, user_api_keys)
+- [ ] `golang-migrate` v4.18 init container in Docker Compose
+- [ ] Docker Compose minimal stack: web + api + worker + postgres + redis + resume-builder + resume-printer
+- [ ] Better Auth v1.3: email/password + Google OAuth in Next.js, with JWT plugin for bearer token issuance
+- [ ] Go API: JWT validation middleware using JWKS from Next.js (`/api/auth/jwks`)
+- [ ] CI: Go vet + test, TypeScript tsc + lint, sqlc staleness checks
 
 ### Milestone 1.2 — Application tracker (weeks 3–5)
 
-- [ ] Kanban board with `@dnd-kit` drag-and-drop
+- [ ] Kanban board with `@dnd-kit/react` drag-and-drop
 - [ ] List, table, and calendar views
-- [ ] Application state machine (`saved` → `applied` → `interviewing` → `offer` → `closed`)
+- [ ] Application state machine (`discovered` → `saved` → `ready` → `applied` → `interviewing` → `offer` → `closed`)
+- [ ] Custom stages: rename, reorder, add Kanban columns via `stages` table
 - [ ] Application card: all fields including JD snapshot storage
 - [ ] Follow-up reminder auto-calculation
 - [ ] Stat bar: total applied, response rate, active interviews, follow-ups due
 - [ ] Global search with `Cmd+K` (cmdk)
 - [ ] Filters: location type, stage, date range, source
 - [ ] Bulk select and bulk actions
+- [ ] Tags: create, assign, filter by tags
+- [ ] Activity log: record all state changes, notes, and actions
 
-### Milestone 1.3 — Resume builder (weeks 5–8)
+### Milestone 1.3 — RxResume integration (weeks 5–7)
 
-- [ ] Resume data model (JSONB; sections, items, metadata)
-- [ ] Live preview with real-time updates
-- [ ] Drag-and-drop section reordering
-- [ ] Multiple named resume versions
-- [ ] Version history with restore
-- [ ] PDF export via Puppeteer (server-side rendering of resume template to PDF)
-- [ ] DOCX export via docx.js
-- [ ] Plain text / ATS export
-- [ ] Starter template library (5–10 templates)
-- [ ] Resume-to-application linking (records which version was submitted)
+- [ ] RxResume Docker Compose services (resume-builder + resume-printer)
+- [ ] Go API proxy endpoints for resume CRUD via RxResume REST API
+- [ ] Resume-to-application linking (which version was submitted where)
+- [ ] Resume snapshot on application submit (save RxResume JSON to `resumes.content`)
+- [ ] DOCX export via `docx.js` in Go worker (RxResume handles PDF)
 
 ### Milestone 1.4 — AI features (BYOK) (weeks 7–10)
 
-- [ ] `apps/api/internal/ai/` — Go provider abstraction (OpenAI, Anthropic, OpenRouter, Ollama)
-- [ ] `apps/worker/internal/ai/` — same abstraction for background tasks
-- [ ] BYOK settings page: provider selection, API key input (encrypted at rest), model overrides per task type
-- [ ] Asynq task: `job:extract` — JD field extraction via LLM → update job record (sqlc)
-- [ ] Asynq task: `job:score` — suitability score + reason → update job record (sqlc)
+- [ ] `internal/ai/` — Go provider abstraction (OpenAI-compatible + Ollama)
+- [ ] `internal/ai/prompts/` — embedded `.txt` prompt templates via `embed.FS`
+- [ ] BYOK settings page: provider selection, API key input (encrypted at rest via `user_api_keys` table), model overrides per task type
+- [ ] Asynq task: `job:extract` — JD field extraction via LLM → update job record (sqlc) → log to activity_log
+- [ ] Asynq task: `job:score` — suitability score + reason → update job record (sqlc) → publish SSE via Redis Pub/Sub
 - [ ] Gin endpoint: `POST /api/v1/jobs/:id/ats-score` — ATS keyword match (streaming response)
-- [ ] Gin endpoint: `POST /api/v1/jobs/:id/tailor-resume` — resume tailoring suggestions
+- [ ] Gin endpoint: `POST /api/v1/jobs/:id/tailor-resume` — resume tailoring suggestions (reads from RxResume API)
 - [ ] Gin endpoint: `POST /api/v1/jobs/:id/cover-letter` — cover letter generation (streaming)
 - [ ] Gin endpoint: `POST /api/v1/jobs/:id/interview-prep` — interview prep generation
-- [ ] Ghostwriter: `GET /api/v1/jobs/:id/ghostwriter` (SSE stream), `POST /api/v1/jobs/:id/ghostwriter/messages`
+- [ ] Ghostwriter: `GET /api/v1/jobs/:id/ghostwriter` (SSE stream via Redis Pub/Sub), `POST /api/v1/jobs/:id/ghostwriter/messages`
+- [ ] SSE endpoint: `GET /api/v1/events` — subscribes to Redis Pub/Sub `sse:{userID}` channel
 
-### Milestone 1.5 — Networking & data (weeks 9–11)
+### Milestone 1.5 — Networking & data (weeks 9–12)
 
 - [ ] Contacts CRM with relationship status
 - [ ] Company profiles database
@@ -971,7 +1188,7 @@ Goal: a fully functional self-hosted product that solves the core problem comple
 - [ ] Automated backup scheduling (daily Postgres dump)
 - [ ] Resource library (tagged bookmarks per job search)
 
-### Milestone 1.6 — Polish & launch (weeks 11–13)
+### Milestone 1.6 — Polish & launch (weeks 12–16)
 
 - [ ] Onboarding wizard (first-run setup flow)
 - [ ] Weekly goal targets + consistency dashboard
@@ -980,38 +1197,32 @@ Goal: a fully functional self-hosted product that solves the core problem comple
 - [ ] Public GitHub release (AGPL-3.0)
 - [ ] Product Hunt launch preparation
 
-**Phase 1 definition of done:** A developer can `git clone`, `docker compose up`, and have a fully functional job tracker running in under 10 minutes. No paid API key required to use core features.
+**Phase 1 definition of done:** A developer can `git clone`, `docker compose up`, and have a fully functional job tracker with integrated resume builder running in under 10 minutes. No paid API key required to use core features.
 
 ---
 
-## 14. Phase 2 — Growth (months 6–12)
+## 12. Phase 2 — Growth (months 6–12)
 
-Goal: launch the cloud hosted version, add the discovery pipeline, and reach initial paying users.
+Goal: add the discovery pipeline, Smart Router, browser extension, and deeper integrations.
 
-### Milestone 2.1 — Cloud launch (weeks 1–3)
+### Milestone 2.1 — Discovery pipeline (weeks 1–5)
 
-- [ ] Deploy cloud-hosted version (see internal documentation)
-- [ ] Enable multi-tenant mode with RLS policies
-- [ ] Cloud landing page and sign-up flow
-
-### Milestone 2.2 — Discovery pipeline (weeks 2–6)
-
-- [ ] Redis Streams schema: `stream:scrape:<board>` (tasks in), `stream:raw_jobs` (results out)
-- [ ] Go worker: `scrape:dispatch` Asynq task — publishes `ScrapeTask` to source-specific stream
-- [ ] Go worker: `raw_jobs` stream consumer — deduplication + write `discovered` records + enqueue scoring
-- [ ] `scrapers/shared/` — TypeScript package: `RawJob`/`ScrapeTask` types + `ioredis` queue client
-- [ ] `scrapers/linkedin/` — TypeScript scraper using Playwright + Camoufox CDP
+- [ ] Scraper HTTP service pattern: `POST /scrape` → returns `RawJob[]`
+- [ ] Go worker: `scrape:dispatch` Asynq task — sends HTTP requests to scraper services
+- [ ] Go worker: deduplication + write `discovered` records + enqueue scoring + log activity
+- [ ] `scrapers/shared/` — TypeScript package: `RawJob`/`ScrapeTask` types
+- [ ] `scrapers/linkedin/` — TypeScript scraper using Playwright + `playwright-extra` stealth plugin
 - [ ] `scrapers/indeed/` — TypeScript scraper using Playwright
-- [ ] `scrapers/glassdoor/` — TypeScript scraper using Playwright + Camoufox CDP
+- [ ] `scrapers/glassdoor/` — TypeScript scraper using Playwright + stealth
 - [ ] `scrapers/adzuna/` — TypeScript scraper using `fetch()` against Adzuna REST API
-- [ ] Camoufox sidecar container with CDP endpoint
-- [ ] `docker-compose.yml` full stack (extends minimal + scrapers + camoufox)
+- [ ] Single combined scraper container option for self-hosted deployments
+- [ ] `docker-compose.yml` full stack (extends minimal + scrapers)
 - [ ] Pipeline run UI: source selection, country, keywords, min score threshold, topN
 - [ ] SSE endpoint for pipeline progress: jobs found / scored / filtered counts
 - [ ] Asynq Inspector UI exposed at `/internal/asynq` (basic auth protected)
 - [ ] Turbo pipeline: `turbo run build` covers all scraper packages alongside `apps/web`
 
-### Milestone 2.3 — Smart Router (weeks 5–8)
+### Milestone 2.2 — Smart Router (weeks 4–7)
 
 - [ ] Gmail OAuth setup (Google Cloud project, consent screen)
 - [ ] Go worker: Asynq cron task `email:poll` (every 5 min) using `google.golang.org/api/gmail`
@@ -1023,16 +1234,16 @@ Goal: launch the cloud hosted version, add the discovery pipeline, and reach ini
 - [ ] Settings: revoke Gmail access (deletes OAuth tokens + email events via sqlc)
 - [ ] Self-hosting guide: Google Cloud project setup, OAuth credential registration
 
-### Milestone 2.4 — Browser extension (weeks 7–10)
+### Milestone 2.3 — Browser extension (weeks 6–9)
 
 - [ ] Chrome extension (Manifest V3)
 - [ ] One-click "Add to Jobs Avocado" button injected on supported job boards
 - [ ] Board support: LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday
 - [ ] Minimal permissions: `activeTab` only (read current page; no background access)
 - [ ] Popup shows current tracker stats (applications this week, response rate)
-- [ ] Sync to both self-hosted and cloud instances (configurable endpoint)
+- [ ] Sync to any Jobs Avocado instance (configurable endpoint)
 
-### Milestone 2.5 — Webhooks & integrations (weeks 9–11)
+### Milestone 2.4 — Webhooks & integrations (weeks 8–10)
 
 - [ ] Webhook configuration UI (URL, events, signing secret)
 - [ ] HMAC-signed payloads for all job state change events
@@ -1040,13 +1251,21 @@ Goal: launch the cloud hosted version, add the discovery pipeline, and reach ini
 - [ ] Read-only public share mode (share job search dashboard publicly)
 - [ ] Zapier / Make.com webhook documentation
 
-**Phase 2 definition of done:** Cloud version is live with paying Pro users. Self-hosted users can upgrade to the discovery pipeline and Smart Router with minimal configuration.
+### Milestone 2.5 — Deeper RxResume integration (weeks 9–12)
+
+- [ ] SSO via OIDC: configure RxResume custom OAuth provider to use Jobs Avocado's Better Auth as identity provider
+- [ ] AI resume tailoring via RxResume MCP endpoint (`/mcp`) or REST API JSON Patch
+- [ ] ATS scoring: fetch resume JSON from RxResume, compare against JD keywords
+- [ ] Consider adding native Anthropic/Gemini AI providers if OpenRouter passthrough shows latency issues
+- [ ] Evaluate scraper migration to Redis Streams with `XREADGROUP` consumer groups if HTTP timeouts are a problem
+
+**Phase 2 definition of done:** Self-hosted users can upgrade to the discovery pipeline and Smart Router with minimal configuration. Browser extension available for Chrome.
 
 ---
 
-## 15. Phase 3 — B2B (months 12–18)
+## 13. Phase 3 — B2B (months 12–18)
 
-Goal: close the first institutional contracts and build the cohort management features that justify $5K–$50K/year pricing.
+Goal: build cohort management and institutional features for organisations.
 
 ### Milestone 3.1 — Organisation tier (weeks 1–4)
 
@@ -1056,10 +1275,11 @@ Goal: close the first institutional contracts and build the cohort management fe
 - [ ] Cohort dashboard: aggregate placement rates, application volume, response rates across members
 - [ ] Time-to-offer distribution across cohort
 - [ ] Member progress overview (at-a-glance status per student)
+- [ ] `custom_fields` JSONB column on relevant tables for institution-specific fields
 
 ### Milestone 3.2 — Institutional reporting (weeks 3–6)
 
-- [ ] Exportable outcome reports (PDF + CSV)
+- [ ] Exportable outcome reports (PDF + CSV) powered by `activity_log` data
 - [ ] WIOA/accreditation-compatible field mapping (workforce development programs)
 - [ ] Custom report builder: select metrics, date range, cohort filter
 - [ ] Scheduled report delivery (email weekly/monthly report to advisor)
@@ -1070,17 +1290,13 @@ Goal: close the first institutional contracts and build the cohort management fe
 - [ ] SCIM provisioning for bulk user management
 - [ ] Custom AI system prompt per organisation (e.g. "Focus on entry-level engineering roles")
 
-### Milestone 3.4 — Sales enablement (weeks 8–12)
-
-Commercial sales enablement details are maintained in internal documentation.
-
 ---
 
-## 16. Testing strategy
+## 14. Testing strategy
 
 ### Go — unit tests (`go test`)
 
-Pure business logic functions in `internal/services/` and `internal/ai/` are unit tested with the standard `testing` package and `testify/assert`. AI provider calls are mocked via an interface:
+Pure business logic functions in `apps/api/internal/services/` and `internal/ai/` are unit tested with the standard `testing` package and `testify/assert`. AI provider calls are mocked via the `Provider` interface:
 
 ```go
 // tests use a MockProvider instead of calling real LLMs
@@ -1100,6 +1316,7 @@ API handlers and sqlc query functions are tested against a real Postgres instanc
 - State machine transitions (valid paths and invalid attempts)
 - JWT middleware (valid token, expired token, wrong issuer)
 - AI task enqueue → handler → mock LLM → DB update round trip
+- Activity log entries created on state changes
 
 ```go
 func TestCreateJob(t *testing.T) {
@@ -1136,14 +1353,14 @@ Scraper tests run as part of `turbo run test` — the same command that runs fro
 
 ### TypeScript frontend — Vitest
 
-Component logic, TanStack Query hooks, and form validation are unit tested with Vitest and React Testing Library. Generated API client functions are mocked at the network layer using MSW (Mock Service Worker).
+Component logic, TanStack Query hooks, and form validation are unit tested with Vitest and React Testing Library. API client functions are mocked at the network layer using MSW (Mock Service Worker).
 
 ### End-to-end — Playwright
 
 Critical user journeys run against a full Docker Compose stack in CI:
 
 - New user → onboarding wizard → add first job via manual import → AI score appears
-- Resume builder → create version → export PDF → link to application
+- Resume builder link → create version in RxResume → link to application
 - Apply to job → state transition → follow-up reminder in stat bar
 - Ghostwriter → send message → streaming response renders
 - Pipeline run → progress SSE updates → new discovered jobs appear
@@ -1156,14 +1373,14 @@ Each prompt in `internal/ai/prompts/` has a golden test file with 5–10 input/o
 
 ---
 
-## 17. Security considerations
+## 15. Security considerations
 
 ### API key storage
 
-User BYOK keys are encrypted at rest using AES-256-GCM in the Go API before being written to Postgres. The encryption key is derived per-user using HKDF from a master secret (`API_ENCRYPTION_KEY` env var) and the user's UUID as salt. Keys are never logged, never included in error responses, and never returned in API responses after the initial save — the settings UI shows only a masked placeholder.
+User BYOK keys are encrypted at rest using AES-256-GCM in the Go API before being written to the `user_api_keys` table. The encryption key is derived per-user using HKDF from a master secret (`API_ENCRYPTION_KEY` env var) and the user's UUID as salt. Keys are never logged, never included in error responses, and never returned in API responses after the initial save — the settings UI shows only a masked placeholder.
 
 ```go
-// apps/api/internal/crypto/keys.go
+// internal/crypto/keys.go
 func EncryptKey(masterKey []byte, userID uuid.UUID, plaintext string) (string, error) {
     derived := hkdf.New(sha256.New, masterKey, userID[:], nil)
     key := make([]byte, 32)
@@ -1204,13 +1421,13 @@ Redis-backed rate limiting in Gin middleware using a token bucket per user ID (o
 
 ### Scraper container isolation
 
-Each scraper container runs as a non-root user with a read-only filesystem (`--read-only` Docker flag). They have no network access beyond Redis and the Camoufox CDP endpoint — outbound job board traffic goes through the Camoufox browser pool, not directly from the container's network interface.
+Each scraper container runs as a non-root user with a read-only filesystem (`--read-only` Docker flag). They have no outbound network access beyond job board sites and the Go API.
 
 Base image is `node:20-slim`. Dependencies are pinned via `package-lock.json` with `npm ci` in the Dockerfile — no floating version ranges in production images. `npm audit` runs in CI for each scraper package, blocking the build on any known high-severity CVE.
 
 ### Gmail OAuth scope
 
-The app requests `gmail.readonly` only — the narrowest scope that allows reading email content. The Go worker never calls `gmail.send`, `gmail.modify`, or any write API. Gmail tokens are stored encrypted using the same AES-256-GCM scheme as API keys. Revoking access calls the Google OAuth revoke endpoint, then deletes all stored tokens and email events via sqlc in a single transaction.
+The app requests `gmail.readonly` only — the narrowest scope that allows reading email content. The Go worker never calls `gmail.send`, `gmail.modify`, or any write API. Gmail tokens are stored encrypted in `user_api_keys` (provider = `gmail`) using the same AES-256-GCM scheme as AI keys. Revoking access calls the Google OAuth revoke endpoint, then deletes all stored tokens and email events via sqlc in a single transaction.
 
 ### AGPL compliance
 
@@ -1223,7 +1440,7 @@ The Go API serves `GET /.well-known/source-code` returning a JSON document point
 
 ---
 
-## 18. Contributing guidelines
+## 16. Contributing guidelines
 
 ### Getting started
 
@@ -1239,7 +1456,7 @@ cp .env.example .env
 npm install
 
 # 4. Start infrastructure (Postgres + Redis only, no scrapers)
-docker compose -f docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.dev.yml up -d
 
 # 5. Run database migrations
 cd apps/api && go run ./cmd/migrate/main.go up && cd ../..
@@ -1247,7 +1464,7 @@ cd apps/api && go run ./cmd/migrate/main.go up && cd ../..
 # 6. Regenerate sqlc types (only needed after editing a .sql file)
 ./scripts/sqlc-generate.sh
 
-# 7. Regenerate API client (only needed after editing openapi/jobs-avocado.yaml)
+# 7. Regenerate API client types (only needed after editing openapi/jobs-avocado.yaml)
 ./scripts/generate-api-client.sh
 
 # 8. Start all services in development mode
@@ -1258,19 +1475,20 @@ npm run dev
 Dev URLs:
 - Frontend: `http://localhost:3000`
 - Go API: `http://localhost:8080`
+- Resume Builder: `http://localhost:3010`
 - Asynq Inspector: `http://localhost:8081`
 
 ### What to work on
 
 Good first issues are labelled `good-first-issue` on GitHub. High-impact contribution areas:
 
-**Scrapers (TypeScript):** Add support for a new job board. Create `scrapers/<board>/`, implement `src/scraper.ts` reading from `stream:scrape:<board>` and writing `RawJob` objects to `stream:raw_jobs` via `@jobs-avocado/scraper-shared`. Add `package.json`, `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Register the service in `docker-compose.yml`. No other files change — Turborepo picks up the new package automatically. See `scrapers/adzuna/` as a reference for fetch-based scrapers or `scrapers/indeed/` for Playwright-based ones.
+**Scrapers (TypeScript):** Add support for a new job board. Create `scrapers/<board>/`, implement a `POST /scrape` HTTP endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add `package.json`, `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Register the service in `docker-compose.yml`. See `scrapers/adzuna/` as a reference for fetch-based scrapers or `scrapers/indeed/` for Playwright-based ones.
 
 **Go API / worker:** New endpoints follow the pattern: add to `openapi/jobs-avocado.yaml` → run `./scripts/generate-api-client.sh` → implement the generated interface in `internal/handlers/` → add business logic in `internal/services/` → write sqlc queries in `db/queries/` → run `./scripts/sqlc-generate.sh`. Integration tests in `internal/handlers/<feature>_test.go`.
 
-**Resume templates:** Add a new template to the library. Templates are HTML/CSS files in `apps/web/src/templates/` rendered to PDF server-side via a Chromium headless call from the Go worker. Copy an existing template, modify the layout, add a thumbnail image.
+**Resume integration:** Improve the RxResume integration layer — resume snapshot logic, AI tailoring suggestions via JSON Patch, ATS scoring against resume JSON.
 
-**AI prompts:** Improve prompt quality in `apps/api/internal/ai/prompts/` or `apps/worker/internal/ai/prompts/`. Each prompt file has a corresponding `_test.go` with golden examples — run `go test ./internal/ai/prompts/...` to verify your changes don't regress existing cases.
+**AI prompts:** Improve prompt quality in `internal/ai/prompts/`. Prompts are plain `.txt` files — no Go knowledge required. Each prompt has a corresponding golden test — run `go test ./internal/ai/prompts/...` to verify your changes don't regress existing cases.
 
 **Translations:** i18n via `next-intl`. Add a new locale by creating `apps/web/messages/<locale>.json` and translating the keys from `en.json`.
 
@@ -1285,8 +1503,7 @@ Good first issues are labelled `good-first-issue` on GitHub. High-impact contrib
 
 **TypeScript (web, scrapers, packages):**
 - Strict TypeScript throughout — no `any`. CI runs `tsc --noEmit` across the entire workspace
-- The generated API client in `packages/api-client/` is the source of truth for API types — do not cast around them
-- Scrapers must only interact with Redis via `@jobs-avocado/scraper-shared` — no direct `ioredis` calls in scraper code
+- The generated API types in `packages/api-client/` are the source of truth for API types — do not cast around them
 - Components in `packages/ui/` are unstyled primitives; application-specific styling lives in `apps/web/`
 - ESLint config is shared from `packages/config/` — run `turbo run lint` before submitting
 
@@ -1301,4 +1518,4 @@ Good first issues are labelled `good-first-issue` on GitHub. High-impact contrib
 
 ---
 
-*Implementation plan version 2.1 — updated for Go API (Gin + sqlc), Go worker (Asynq), and TypeScript scraper containers.*
+*Implementation plan version 3.1 — updated: removed cloud/commercialization details (moved to internal Project Details), Reactive Resume v5 integration, 2 AI providers (OpenAI-compatible + Ollama), shared Go AI module, HTTP scrapers, Redis Pub/Sub SSE bridge, Camoufox removal, extended schema (stages, activity_log, tags, user_api_keys), and latest framework versions (Next.js 16, Tailwind v4, TanStack Query v5, Playwright v1.58, Better Auth v1.3, Turborepo v2.8, Gin v1.10, sqlc v1.30, golang-migrate v4.18).*

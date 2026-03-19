@@ -1,20 +1,20 @@
-# JobTracker
+# Jobs Avocado
 
 > Open-source job application management. Every feature, free — forever.
 
 ---
 
-JobTracker combines a job application tracker, resume builder, and AI job assistant in a single open-source platform. Self-host it for free with your own AI key, or use the managed cloud version and let us handle the infrastructure.
+Jobs Avocado combines a job application tracker, integrated resume builder (powered by [Reactive Resume](https://rxresu.me)), and AI job assistant in a single open-source platform. Self-host it for free with your own AI key, or use the managed cloud version and let us handle the infrastructure.
 
 No feature gates. No crippled free tier. No data selling.
 
 ---
 
-## Why JobTracker
+## Why Jobs Avocado
 
 The average successful job search requires 100–200 applications over 5–8 months. Spreadsheets break under that load. Proprietary tools like Teal ($29/mo) and Huntr ($40/mo) charge significant recurring fees to users who are often unemployed — and have drawn criticism for selling resume data, blocking data export, and producing generic AI output.
 
-Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) but nothing meaningful combines a resume builder with a full application tracker. That's the gap JobTracker fills.
+Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) but nothing meaningful combines a resume builder with a full application tracker. That's the gap Jobs Avocado fills — integrating Reactive Resume v5 as a microservice rather than rebuilding from scratch.
 
 ---
 
@@ -31,12 +31,13 @@ Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) 
 - Bulk actions and keyboard shortcuts for high-volume searches
 - Global fuzzy search with `@status` filtering
 
-### Resume builder
-- Community-contributed template library
+### Resume builder (powered by Reactive Resume v5)
+- 13 built-in templates with CSS customisation, colour/typography control
 - Multiple named resume versions (e.g. "v3 — growth roles")
 - Real-time preview, drag-and-drop section reordering
-- Export to PDF, DOCX, and ATS-safe plain text
+- Export to PDF and JSON (DOCX export via Jobs Avocado worker)
 - Version history with restore
+- Resume-to-application linking with A/B analytics
 
 ### AI features (BYOK or managed)
 - **Suitability scoring** — AI ranks discovered jobs 0–100 against your profile before you apply
@@ -73,7 +74,12 @@ Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) 
 
 ## AI providers
 
-**BYOK** = Bring Your Own API Key. Supports OpenAI, Anthropic, OpenRouter, Gemini, or local models via Ollama/LM Studio. You pay your provider directly — JobTracker never charges for AI usage. The cloud version also offers managed AI so you can skip key setup entirely.
+**BYOK** = Bring Your Own API Key. Two provider implementations cover all models:
+
+- **OpenAI-compatible** — supports OpenAI directly, plus Anthropic, Gemini, and 100+ other models via [OpenRouter](https://openrouter.ai) (which uses the OpenAI API format)
+- **Ollama** — local models with zero API key requirement, fully offline
+
+You pay your provider directly — Jobs Avocado never charges for AI usage. The cloud version also offers managed AI so you can skip key setup entirely.
 
 ---
 
@@ -95,7 +101,7 @@ AGPL-3.0. Self-host, fork, and modify freely. Anyone hosting a modified version 
 
 ## Roadmap
 
-**Now (months 1–6):** Core tracker, resume builder, manual JD import, networking CRM, company profiles, basic analytics, BYOK AI, Docker self-hosting.
+**Now (months 1–6):** Core tracker, Reactive Resume v5 integration, manual JD import, networking CRM, company profiles, basic analytics, BYOK AI (OpenAI-compatible + Ollama), Docker self-hosting.
 
 **Next (months 6–12):** Automated job discovery pipeline, Ghostwriter, Smart Router Gmail integration, browser extension, offer comparison, advanced analytics, cloud hosted version.
 
@@ -106,6 +112,20 @@ AGPL-3.0. Self-host, fork, and modify freely. Anyone hosting a modified version 
 ## Contributing
 
 All contributions welcome — features, templates, extractors, translations, and documentation. See `CONTRIBUTING.md` to get started.
+
+---
+
+### Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16, Tailwind CSS v4, TanStack Query v5, shadcn/ui |
+| API | Go + Gin v1.10, sqlc v1.30, golang-migrate v4.18 |
+| Worker | Go + Asynq v0.28 |
+| Resume builder | Reactive Resume v5 (integrated as microservice) |
+| Database | PostgreSQL 16 |
+| Queue / cache | Redis 7 |
+| Scrapers | TypeScript + Playwright v1.58 |
 
 ---
 
