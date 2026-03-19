@@ -333,7 +333,7 @@ Phase 2: Deeper integration
 | `apps/api` | Go | Gin v1.10, sqlc v1.30, golang-migrate v4.18 |
 | `apps/worker` | Go | Asynq v0.28 |
 | `internal/` | Go | AI provider abstraction, crypto |
-| `scrapers/*` | TypeScript | Playwright v1.58, playwright-extra, fetch |
+| `scrapers/*` | TypeScript | Playwright v1.58, playwright-extra, Express |
 | `scrapers/shared` | TypeScript | Shared types |
 | `apps/docs` | TypeScript | Docusaurus |
 
@@ -884,15 +884,15 @@ Each scraper exposes a single HTTP endpoint. The Go worker calls it with a `Scra
 import { chromium } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import type { ScrapeTask, RawJob } from '@jobs-avocado/scraper-shared'
-import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
+import express from 'express'
 
 chromium.use(StealthPlugin())
 
-const app = new Hono()
+const app = express()
+app.use(express.json())
 
-app.post('/scrape', async (c) => {
-  const task = await c.req.json<ScrapeTask>()
+app.post('/scrape', async (req, res) => {
+  const task = req.body as ScrapeTask
   const browser = await chromium.launch({ headless: true })
   const jobs: RawJob[] = []
 
@@ -914,10 +914,10 @@ app.post('/scrape', async (c) => {
     await browser.close()
   }
 
-  return c.json(jobs)
+  res.json(jobs)
 })
 
-serve({ fetch: app.fetch, port: 3001 })
+app.listen(3000)
 ```
 
 ### Adding a new scraper
@@ -1073,7 +1073,7 @@ DATABASE_URL=postgres://jobs-avocado:password@postgres:5432/jobs-avocado
 
 # Auth
 BETTER_AUTH_SECRET=<random 32-char string>
-NEXTAUTH_URL=http://localhost:3000
+BETTER_AUTH_URL=http://localhost:3000
 
 # API encryption (for BYOK key storage)
 API_ENCRYPTION_KEY=<random 32-char string>
