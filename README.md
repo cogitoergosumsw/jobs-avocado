@@ -71,20 +71,9 @@ Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) 
 
 ---
 
-## Pricing model
+## AI providers
 
-| | Self-hosted | Cloud free | Cloud paid |
-|---|---|---|---|
-| All core features | ✓ | ✓ | ✓ |
-| AI features | ✓ BYOK | ✓ BYOK | ✓ managed |
-| Local LLM (Ollama) | ✓ | — | — |
-| Email / Smart Router | manual | — | ✓ |
-| Automatic backups | self-managed | ✓ | ✓ |
-| **Price** | **Free** | **Free** | **~$12–15/mo** |
-
-**BYOK** = Bring Your Own API Key (OpenAI, Anthropic, OpenRouter, Gemini, or local via Ollama/LM Studio). No AI costs are charged to you — you pay your provider directly.
-
-The cloud paid tier sells convenience, not access. Every feature exists in the free and self-hosted versions.
+**BYOK** = Bring Your Own API Key. Supports OpenAI, Anthropic, OpenRouter, Gemini, or local models via Ollama/LM Studio. You pay your provider directly — JobTracker never charges for AI usage. The cloud version also offers managed AI so you can skip key setup entirely.
 
 ---
 
