@@ -1,4 +1,4 @@
-# Jobs Avocado — Implementation Plan
+# JobTopBob — Implementation Plan
 
 > Engineering strategy for building an open-source job application management platform.
 
@@ -42,7 +42,7 @@ Data must always be exportable in standard formats. No proprietary storage forma
 A monorepo managed with [Turborepo v2.8+](https://turbo.build/repo) across all TypeScript services and packages — frontend, scrapers, and shared utilities. The Go services use a separate Go workspace with a shared `internal/` module for code reused between the API and worker (AI abstraction, crypto utilities). Everything is orchestrated locally with a single `docker compose up`.
 
 ```
-jobs-avocado/
+jobtopbob/
 ├── apps/
 │   ├── web/                        # Next.js 16 frontend (App Router)
 │   │   ├── src/
@@ -111,7 +111,7 @@ jobs-avocado/
 │   ├── config/                     # Shared ESLint, TypeScript, Tailwind configs
 │   └── api-client/                 # Generated TypeScript client from OpenAPI spec
 ├── openapi/
-│   └── jobs-avocado.yaml           # OpenAPI 3.1 spec (source of truth for API contract)
+│   └── jobtopbob.yaml           # OpenAPI 3.1 spec (source of truth for API contract)
 ├── docker/
 │   ├── docker-compose.yml          # Self-hosted full stack
 │   ├── docker-compose.minimal.yml  # No pipeline, no scrapers (tracker only)
@@ -226,7 +226,7 @@ export interface RawJob {
 
 ```typescript
 // scrapers/adzuna/src/scraper.ts
-import type { ScrapeTask, RawJob } from '@jobs-avocado/scraper-shared'
+import type { ScrapeTask, RawJob } from '@jobtopbob/scraper-shared'
 
 export async function scrape(task: ScrapeTask): Promise<RawJob[]> {
   const response = await fetch(
@@ -251,7 +251,7 @@ export async function scrape(task: ScrapeTask): Promise<RawJob[]> {
 
 ### Hyperbrowser decision
 
-Bot-hostile job boards (LinkedIn, Glassdoor) require stealth browsing, residential proxies, and CAPTCHA solving. Rather than assembling these from separate providers, Jobs Avocado uses **Hyperbrowser** — a managed cloud browser platform that bundles all three behind a single API.
+Bot-hostile job boards (LinkedIn, Glassdoor) require stealth browsing, residential proxies, and CAPTCHA solving. Rather than assembling these from separate providers, JobTopBob uses **Hyperbrowser** — a managed cloud browser platform that bundles all three behind a single API.
 
 **Why Hyperbrowser:**
 - **CDP-compatible sessions** — Playwright connects via `chromium.connectOverCDP(session.wsEndpoint)`. Existing scraper code changes by 3 lines (swap `chromium.launch()` for the Hyperbrowser session).
@@ -304,11 +304,11 @@ Self-hosted users who don't set `HYPERBROWSER_API_KEY` get the full Playwright +
 
 ### Resume builder — Reactive Resume v5 integration
 
-Rather than building a resume builder from scratch (estimated 4–6 weeks), Jobs Avocado integrates [Reactive Resume v5](https://rxresu.me) as a microservice. This is the single highest-impact streamlining decision.
+Rather than building a resume builder from scratch (estimated 4–6 weeks), JobTopBob integrates [Reactive Resume v5](https://rxresu.me) as a microservice. This is the single highest-impact streamlining decision.
 
 **Why RxResume is an ideal fit:**
 
-| Dimension | RxResume v5 | Jobs Avocado | Compatible? |
+| Dimension | RxResume v5 | JobTopBob | Compatible? |
 |---|---|---|---|
 | Auth | Own auth system + custom OAuth/OIDC | Better Auth | SSO via OIDC provider config |
 | Database | PostgreSQL | PostgreSQL (sqlc) | Same DB engine |
@@ -318,7 +318,7 @@ Rather than building a resume builder from scratch (estimated 4–6 weeks), Jobs
 | AI integration | MCP server at `/mcp` | Internal AI layer | Can use RxResume MCP for AI editing |
 | Licence | MIT | AGPL-3.0 | MIT is AGPL-compatible |
 
-**Note on auth:** RxResume v5 uses its own auth system (not Better Auth), secured by an `AUTH_SECRET` env var. It supports Google, GitHub, and custom OAuth/OIDC providers. For SSO between Jobs Avocado and RxResume, configure RxResume's custom OAuth provider to point at Jobs Avocado's Better Auth OIDC endpoint — this way users authenticate once and get access to both systems.
+**Note on auth:** RxResume v5 uses its own auth system (not Better Auth), secured by an `AUTH_SECRET` env var. It supports Google, GitHub, and custom OAuth/OIDC providers. For SSO between JobTopBob and RxResume, configure RxResume's custom OAuth provider to point at JobTopBob's Better Auth OIDC endpoint — this way users authenticate once and get access to both systems.
 
 **RxResume v5 capabilities:**
 - Full REST API: `POST /resumes`, `GET /resumes/{id}/pdf`, JSON Patch updates
@@ -337,13 +337,13 @@ Rather than building a resume builder from scratch (estimated 4–6 weeks), Jobs
 Phase 1: Microservice composition
 ├── Add RxResume as a Docker Compose service (app + printer)
 ├── Share PostgreSQL instance (separate database) or use RxResume's own DB
-├── Jobs Avocado Go API proxies resume operations via RxResume REST API
-├── Store RxResume user API keys in Jobs Avocado's user_api_keys table
+├── JobTopBob Go API proxies resume operations via RxResume REST API
+├── Store RxResume user API keys in JobTopBob's user_api_keys table
 ├── Link resume IDs to job applications (existing jobs.resume_id column)
 └── PDF export calls RxResume's GET /resumes/{id}/pdf endpoint
 
 Phase 2: Deeper integration
-├── SSO via OIDC: configure RxResume custom OAuth to use Jobs Avocado's Better Auth as provider
+├── SSO via OIDC: configure RxResume custom OAuth to use JobTopBob's Better Auth as provider
 ├── AI resume tailoring via RxResume MCP endpoint or JSON Patch API
 ├── Resume version tracking: snapshot RxResume JSON on application submit
 └── ATS scoring: fetch resume JSON from RxResume, compare against JD
@@ -357,15 +357,15 @@ Phase 2: Deeper integration
 - Template library (13+ templates included)
 - Version history UI (RxResume handles this)
 
-**What Jobs Avocado still owns:**
+**What JobTopBob still owns:**
 - Resume-to-application linking (which version was submitted where)
-- AI-powered resume tailoring suggestions (Jobs Avocado AI → RxResume API/MCP)
+- AI-powered resume tailoring suggestions (JobTopBob AI → RxResume API/MCP)
 - ATS keyword scoring (reads resume JSON, compares to JD)
 - Resume A/B analytics (response rate by version)
 
 **Trade-offs:**
-- No DOCX export (RxResume supports PDF + JSON only) — can add via `docx.js` in Jobs Avocado's worker
-- Adds 2 containers to the stack (RxResume app + Chromium printer) — but removes the need for Jobs Avocado's own Puppeteer
+- No DOCX export (RxResume supports PDF + JSON only) — can add via `docx.js` in JobTopBob's worker
+- Adds 2 containers to the stack (RxResume app + Chromium printer) — but removes the need for JobTopBob's own Puppeteer
 - RxResume's template customisation is CSS-based, not a visual editor — sufficient for most users
 - Users see RxResume's UI for resume editing (can be embedded via iframe or linked) — not a fully seamless experience without deeper integration
 - Auth is separate (RxResume has its own auth system) — Phase 2 SSO via OIDC bridges this gap
@@ -931,7 +931,7 @@ Each scraper exposes a single HTTP endpoint. The Go worker calls it with a `Scra
 // scrapers/linkedin/src/scraper.ts
 import { chromium } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
-import type { ScrapeTask, RawJob } from '@jobs-avocado/scraper-shared'
+import type { ScrapeTask, RawJob } from '@jobtopbob/scraper-shared'
 import express from 'express'
 
 chromium.use(StealthPlugin())
@@ -970,7 +970,7 @@ app.listen(3000)
 
 ### Adding a new scraper
 
-Create `scrapers/<board>/`, implement an HTTP server with a `POST /scrape` endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add a `package.json` (importing `@jobs-avocado/scraper-shared`), a `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Add the service to `docker-compose.yml`. No other file in the repo changes — Turborepo picks up the new package automatically.
+Create `scrapers/<board>/`, implement an HTTP server with a `POST /scrape` endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add a `package.json` (importing `@jobtopbob/scraper-shared`), a `tsconfig.json` extending `@jobtopbob/config/tsconfig.base.json`, and a `Dockerfile`. Add the service to `docker-compose.yml`. No other file in the repo changes — Turborepo picks up the new package automatically.
 
 ### Deduplication
 
@@ -1072,7 +1072,7 @@ services:
       - PRINTER_APP_URL=http://resume-builder:3000
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/rxresume
       - PRINTER_ENDPOINT=ws://resume-printer:3000
-      - AUTH_SECRET=${RXRESUME_AUTH_SECRET}  # separate from Jobs Avocado's BETTER_AUTH_SECRET
+      - AUTH_SECRET=${RXRESUME_AUTH_SECRET}  # separate from JobTopBob's BETTER_AUTH_SECRET
     ports:
       - "3010:3000"
     volumes:
@@ -1117,7 +1117,7 @@ A complete `.env.example` is committed to the repo. Required variables for minim
 
 ```bash
 # Database
-DATABASE_URL=postgres://jobs-avocado:password@postgres:5432/jobs-avocado
+DATABASE_URL=postgres://jobtopbob:password@postgres:5432/jobtopbob
 
 # Auth
 BETTER_AUTH_SECRET=<random 32-char string>
@@ -1142,7 +1142,7 @@ RESUME_BUILDER_URL=http://localhost:3010
 # Optional: Storage (defaults to local filesystem if unset)
 # STORAGE_DRIVER=s3
 # S3_ENDPOINT=http://minio:9000
-# S3_BUCKET=jobs-avocado
+# S3_BUCKET=jobtopbob
 # S3_ACCESS_KEY=minioadmin
 # S3_SECRET_KEY=minioadmin
 ```
@@ -1179,7 +1179,7 @@ Goal: a fully functional self-hosted product that solves the core problem comple
 - [ ] Repo structure: `apps/web`, `apps/api`, `apps/worker`, `internal/`, `scrapers/`, `packages/`, `openapi/`
 - [ ] Go workspace (`go.work`) linking `apps/api`, `apps/worker`, and `internal/`
 - [ ] Turborepo v2.8 config for `apps/web`, `scrapers/*`, and `packages/`
-- [ ] `openapi/jobs-avocado.yaml` — initial spec for auth + jobs endpoints
+- [ ] `openapi/jobtopbob.yaml` — initial spec for auth + jobs endpoints
 - [ ] `oapi-codegen` generating Go server interfaces from spec
 - [ ] `openapi-typescript` generating TypeScript types (`packages/api-client/`) — types only, no runtime client
 - [ ] `sqlc.yaml` config + initial SQL migration files (all tables including stages, activity_log, tags, user_api_keys)
@@ -1285,11 +1285,11 @@ Goal: add the discovery pipeline, Smart Router, browser extension, and deeper in
 ### Milestone 2.3 — Browser extension (weeks 6–9)
 
 - [ ] Chrome extension (Manifest V3)
-- [ ] One-click "Add to Jobs Avocado" button injected on supported job boards
+- [ ] One-click "Add to JobTopBob" button injected on supported job boards
 - [ ] Board support: LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday
 - [ ] Minimal permissions: `activeTab` only (read current page; no background access)
 - [ ] Popup shows current tracker stats (applications this week, response rate)
-- [ ] Sync to any Jobs Avocado instance (configurable endpoint)
+- [ ] Sync to any JobTopBob instance (configurable endpoint)
 
 ### Milestone 2.4 — Webhooks & integrations (weeks 8–10)
 
@@ -1301,7 +1301,7 @@ Goal: add the discovery pipeline, Smart Router, browser extension, and deeper in
 
 ### Milestone 2.5 — Deeper RxResume integration (weeks 9–12)
 
-- [ ] SSO via OIDC: configure RxResume custom OAuth provider to use Jobs Avocado's Better Auth as identity provider
+- [ ] SSO via OIDC: configure RxResume custom OAuth provider to use JobTopBob's Better Auth as identity provider
 - [ ] AI resume tailoring via RxResume MCP endpoint (`/mcp`) or REST API JSON Patch
 - [ ] ATS scoring: fetch resume JSON from RxResume, compare against JD keywords
 - [ ] Consider adding native Anthropic/Gemini AI providers if OpenRouter passthrough shows latency issues
@@ -1494,8 +1494,8 @@ The Go API serves `GET /.well-known/source-code` returning a JSON document point
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-org/jobs-avocado.git
-cd jobs-avocado
+git clone https://github.com/your-org/jobtopbob.git
+cd jobtopbob
 
 # 2. Copy and fill in environment variables
 cp .env.example .env
@@ -1512,7 +1512,7 @@ cd apps/api && go run ./cmd/migrate/main.go up && cd ../..
 # 6. Regenerate sqlc types (only needed after editing a .sql file)
 ./scripts/sqlc-generate.sh
 
-# 7. Regenerate API client types (only needed after editing openapi/jobs-avocado.yaml)
+# 7. Regenerate API client types (only needed after editing openapi/jobtopbob.yaml)
 ./scripts/generate-api-client.sh
 
 # 8. Start all services in development mode
@@ -1530,9 +1530,9 @@ Dev URLs:
 
 Good first issues are labelled `good-first-issue` on GitHub. High-impact contribution areas:
 
-**Scrapers (TypeScript):** Add support for a new job board. Create `scrapers/<board>/`, implement a `POST /scrape` HTTP endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add `package.json`, `tsconfig.json` extending `@jobs-avocado/config/tsconfig.base.json`, and a `Dockerfile`. Register the service in `docker-compose.yml`. See `scrapers/adzuna/` as a reference for fetch-based scrapers or `scrapers/indeed/` for Playwright-based ones.
+**Scrapers (TypeScript):** Add support for a new job board. Create `scrapers/<board>/`, implement a `POST /scrape` HTTP endpoint that accepts `ScrapeTask` and returns `RawJob[]`. Add `package.json`, `tsconfig.json` extending `@jobtopbob/config/tsconfig.base.json`, and a `Dockerfile`. Register the service in `docker-compose.yml`. See `scrapers/adzuna/` as a reference for fetch-based scrapers or `scrapers/indeed/` for Playwright-based ones.
 
-**Go API / worker:** New endpoints follow the pattern: add to `openapi/jobs-avocado.yaml` → run `./scripts/generate-api-client.sh` → implement the generated interface in `internal/handlers/` → add business logic in `internal/services/` → write sqlc queries in `db/queries/` → run `./scripts/sqlc-generate.sh`. Integration tests in `internal/handlers/<feature>_test.go`.
+**Go API / worker:** New endpoints follow the pattern: add to `openapi/jobtopbob.yaml` → run `./scripts/generate-api-client.sh` → implement the generated interface in `internal/handlers/` → add business logic in `internal/services/` → write sqlc queries in `db/queries/` → run `./scripts/sqlc-generate.sh`. Integration tests in `internal/handlers/<feature>_test.go`.
 
 **Resume integration:** Improve the RxResume integration layer — resume snapshot logic, AI tailoring suggestions via JSON Patch, ATS scoring against resume JSON.
 
@@ -1561,7 +1561,7 @@ Good first issues are labelled `good-first-issue` on GitHub. High-impact contrib
 2. One feature or fix per PR; keep PRs small and reviewable
 3. The generated files (`apps/api/db/generated/`, `packages/api-client/`) must be committed and up to date — CI checks this and fails if they are stale
 4. Tests required for new Go handler routes and service functions, and for new scraper parsing logic
-5. Update `openapi/jobs-avocado.yaml` and run codegen if you change any API shape
+5. Update `openapi/jobtopbob.yaml` and run codegen if you change any API shape
 6. Update the Docusaurus docs site (`apps/docs/`) if user-visible behaviour changes
 
 ---

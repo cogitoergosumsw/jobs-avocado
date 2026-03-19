@@ -1,20 +1,20 @@
-# Jobs Avocado
+# JobTopBob
 
 > Open-source job application management. Every feature, free — forever.
 
 ---
 
-Jobs Avocado combines a job application tracker, integrated resume builder (powered by [Reactive Resume](https://rxresu.me)), and AI job assistant in a single open-source platform. Self-host it for free with your own AI key, or use the managed cloud version and let us handle the infrastructure.
+JobTopBob combines a job application tracker, integrated resume builder (powered by [Reactive Resume](https://rxresu.me)), and AI job assistant in a single open-source platform. Self-host it for free with your own AI key, or use the managed cloud version and let us handle the infrastructure.
 
 No feature gates. No crippled free tier. No data selling.
 
 ---
 
-## Why Jobs Avocado
+## Why JobTopBob
 
 The average successful job search requires 100–200 applications over 5–8 months. Spreadsheets break under that load. Proprietary tools like Teal ($29/mo) and Huntr ($40/mo) charge significant recurring fees to users who are often unemployed — and have drawn criticism for selling resume data, blocking data export, and producing generic AI output.
 
-Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) but nothing meaningful combines a resume builder with a full application tracker. That's the gap Jobs Avocado fills — integrating Reactive Resume v5 as a microservice rather than rebuilding from scratch.
+Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) but nothing meaningful combines a resume builder with a full application tracker. That's the gap JobTopBob fills — integrating Reactive Resume v5 as a microservice rather than rebuilding from scratch.
 
 ---
 
@@ -35,7 +35,7 @@ Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) 
 - 13 built-in templates with CSS customisation, colour/typography control
 - Multiple named resume versions (e.g. "v3 — growth roles")
 - Real-time preview, drag-and-drop section reordering
-- Export to PDF and JSON (DOCX export via Jobs Avocado worker)
+- Export to PDF and JSON (DOCX export via JobTopBob worker)
 - Version history with restore
 - Resume-to-application linking with A/B analytics
 
@@ -79,7 +79,7 @@ Open-source alternatives exist for resume building (Reactive Resume, 1M+ users) 
 - **OpenAI-compatible** — supports OpenAI directly, plus Anthropic, Gemini, and 100+ other models via [OpenRouter](https://openrouter.ai) (which uses the OpenAI API format)
 - **Ollama** — local models with zero API key requirement, fully offline
 
-You pay your provider directly — Jobs Avocado never charges for AI usage. The cloud version also offers managed AI so you can skip key setup entirely.
+You pay your provider directly — JobTopBob never charges for AI usage. The cloud version also offers managed AI so you can skip key setup entirely.
 
 ---
 
