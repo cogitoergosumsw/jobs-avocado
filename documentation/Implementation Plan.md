@@ -196,7 +196,7 @@ Scrapers are implemented as **stateless HTTP services** (`POST /scrape` → retu
 If scraper runs exceed HTTP timeouts in production, the architecture can be migrated to Redis Streams with `XREADGROUP` consumer groups (not `XREAD` from `$`, which misses messages published before the consumer starts).
 
 - **Playwright v1.58 (Node.js):** The primary Playwright API is TypeScript-first. All browser automation — page navigation, element selection, request interception — uses Playwright's browser API.
-- **Anti-bot stealth:** Bot-hostile boards (LinkedIn, Glassdoor) use `playwright-extra` with the stealth plugin for fingerprint evasion. See the [Camoufox note](#camoufox-decision) below for why CDP-based anti-detect was ruled out.
+- **Anti-bot stealth (hybrid):** Bot-hostile boards (LinkedIn, Glassdoor) use [Hyperbrowser](https://hyperbrowser.ai) cloud browser sessions with built-in stealth, proxy rotation, and CAPTCHA solving. Hyperbrowser sessions are CDP-compatible — Playwright connects via `chromium.connectOverCDP(session.wsEndpoint)`, so scraper logic is unchanged. For self-hosted deployments without a Hyperbrowser API key, scrapers fall back to local Playwright with `playwright-extra` stealth plugin. The browser provider is selected by the presence of `HYPERBROWSER_API_KEY` in the environment.
 - **fetch() for API scrapers:** Boards with official APIs (Adzuna, The Muse) skip Playwright entirely and use the native `fetch()` — no browser dependency.
 - **Turborepo integration:** All scraper packages are part of the Turborepo workspace. They share `packages/config/` for TypeScript and ESLint settings. `turbo run build` builds all scrapers in parallel with caching.
 - **Single container for self-hosted:** For self-hosted deployments, all scrapers are merged into one TypeScript process that dispatches internally by board type. This reduces container count and eliminates duplicate Node.js runtimes. Cloud deployment can split them out later for independent scaling.
@@ -249,13 +249,58 @@ export async function scrape(task: ScrapeTask): Promise<RawJob[]> {
 }
 ```
 
-### Camoufox decision
+### Hyperbrowser decision
 
-The original plan used `chromium.connectOverCDP('http://camoufox:9222')` to connect Playwright to a Camoufox sidecar. **This approach is not viable.** Playwright's `connectOverCDP` is Chromium-only (confirmed in Playwright v1.58 docs), and Camoufox is Firefox-based — these are fundamentally incompatible at the protocol level. Additionally, Camoufox explicitly warns against using CDP as it reveals automation nature and exposes `navigator.webdriver`.
+Bot-hostile job boards (LinkedIn, Glassdoor) require stealth browsing, residential proxies, and CAPTCHA solving. Rather than assembling these from separate providers, Jobs Avocado uses **Hyperbrowser** — a managed cloud browser platform that bundles all three behind a single API.
 
-Camoufox's native API is Python-based (`camoufox.sync_api` / `camoufox.async_api`), which would require adding a Python layer to the scraper stack.
+**Why Hyperbrowser:**
+- **CDP-compatible sessions** — Playwright connects via `chromium.connectOverCDP(session.wsEndpoint)`. Existing scraper code changes by 3 lines (swap `chromium.launch()` for the Hyperbrowser session).
+- **Built-in stealth + ultra stealth** — replaces `playwright-extra` stealth plugin for cloud deployments.
+- **Managed proxy rotation** — geo-targeted by country/state/city. No separate proxy provider needed.
+- **Automatic CAPTCHA solving** — enabled per session via `solveCaptchas: true`.
+- **Batch scrape API** — up to 1,000 URLs per job for bulk listing pages.
+- **Session recording** — built-in web recording for debugging failed scrapes.
 
-**Chosen alternative:** `playwright-extra` with the stealth plugin for Chromium-based anti-detection. This keeps the entire scraper stack in TypeScript, avoids the CDP/Firefox protocol mismatch, and provides sufficient fingerprint evasion for most job boards. If a specific board proves resistant, a Python-based Camoufox adapter can be added as a targeted solution in Phase 2 without affecting the rest of the pipeline.
+**Hybrid strategy:**
+| Board | Provider | Why |
+|---|---|---|
+| LinkedIn, Glassdoor | Hyperbrowser (cloud) | Bot-hostile; needs stealth + proxies + CAPTCHA |
+| Indeed | Self-hosted Playwright | Less aggressive anti-bot; no cloud dependency needed |
+| Adzuna, The Muse | `fetch()` | Official API; no browser needed |
+
+**Browser provider abstraction** (`scrapers/shared/src/browser.ts`):
+
+```typescript
+import { chromium } from 'playwright-core'
+import { Hyperbrowser } from '@hyperbrowser/sdk'
+
+export async function createBrowser(options: { stealth: boolean }) {
+  if (process.env.HYPERBROWSER_API_KEY) {
+    const hb = new Hyperbrowser({ apiKey: process.env.HYPERBROWSER_API_KEY })
+    const session = await hb.sessions.create({
+      useStealth: options.stealth,
+      useProxy: options.stealth,
+      solveCaptchas: true,
+    })
+    return { browser: await chromium.connectOverCDP(session.wsEndpoint), sessionId: session.id }
+  }
+  // Fallback: local Playwright (self-hosted deployments)
+  return { browser: await chromium.launch(), sessionId: null }
+}
+```
+
+**Trade-offs:**
+| Dimension | Hyperbrowser (cloud) | Self-hosted Playwright |
+|---|---|---|
+| Cost | Variable (per-session usage) | Fixed (server costs) |
+| Stealth quality | High (managed, updated) | Moderate (`playwright-extra`) |
+| CAPTCHA solving | Built-in | Requires separate provider |
+| Proxies | Included, geo-targeted | Separate provider needed |
+| Vendor dependency | Yes | None |
+| Latency per CDP command | Higher (remote) | Lower (local) |
+| Data residency | Routes through Hyperbrowser | Stays on your infra |
+
+Self-hosted users who don't set `HYPERBROWSER_API_KEY` get the full Playwright + `playwright-extra` fallback — no cloud dependency required.
 
 ### Resume builder — Reactive Resume v5 integration
 
@@ -333,7 +378,7 @@ Phase 2: Deeper integration
 | `apps/api` | Go | Gin v1.10, sqlc v1.30, golang-migrate v4.18 |
 | `apps/worker` | Go | Asynq v0.28 |
 | `internal/` | Go | AI provider abstraction, crypto |
-| `scrapers/*` | TypeScript | Playwright v1.58, playwright-extra, Express |
+| `scrapers/*` | TypeScript | Playwright v1.58, playwright-extra, @hyperbrowser/sdk, Express |
 | `scrapers/shared` | TypeScript | Shared types |
 | `apps/docs` | TypeScript | Docusaurus |
 
@@ -379,9 +424,12 @@ Phase 2: Deeper integration
 │                                                                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────┐ │
 │  │  linkedin/  │  │  indeed/    │  │  adzuna/                 │ │
-│  │  Playwright │  │  Playwright │  │  fetch() — no browser    │ │
-│  │  + stealth  │  │  (direct)   │  │  (Adzuna REST API)       │ │
+│  │  Hyperbrowser│  │  Playwright │  │  fetch() — no browser    │ │
+│  │  or Playwright│ │  (direct)   │  │  (Adzuna REST API)       │ │
+│  │  + stealth  │  │             │  │                          │ │
 │  └─────────────┘  └─────────────┘  └──────────────────────────┘ │
+│  Note: linkedin/ and glassdoor/ use Hyperbrowser cloud sessions │
+│  when HYPERBROWSER_API_KEY is set; local Playwright otherwise.  │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐    │
 │  │           scrapers/shared (Turborepo package)            │    │
@@ -1518,4 +1566,4 @@ Good first issues are labelled `good-first-issue` on GitHub. High-impact contrib
 
 ---
 
-*Implementation plan version 3.1 — updated: removed cloud/commercialization details (moved to internal Project Details), Reactive Resume v5 integration, 2 AI providers (OpenAI-compatible + Ollama), shared Go AI module, HTTP scrapers, Redis Pub/Sub SSE bridge, Camoufox removal, extended schema (stages, activity_log, tags, user_api_keys), and latest framework versions (Next.js 16, Tailwind v4, TanStack Query v5, Playwright v1.58, Better Auth v1.3, Turborepo v2.8, Gin v1.10, sqlc v1.30, golang-migrate v4.18).*
+*Implementation plan version 3.1 — updated: removed cloud/commercialization details (moved to internal Project Details), Reactive Resume v5 integration, 2 AI providers (OpenAI-compatible + Ollama), shared Go AI module, HTTP scrapers, Redis Pub/Sub SSE bridge, Hyperbrowser integration for bot-hostile boards, extended schema (stages, activity_log, tags, user_api_keys), and latest framework versions (Next.js 16, Tailwind v4, TanStack Query v5, Playwright v1.58, Better Auth v1.3, Turborepo v2.8, Gin v1.10, sqlc v1.30, golang-migrate v4.18).*
