@@ -1,0 +1,8 @@
+{
+  "extends": "@jobtopbob/config/tsconfig/base",
+  "compilerOptions": {
+    "baseUrl": "."
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,29 @@
+openapi: 3.1.0
+info:
+  title: JobTopBob API
+  version: 0.0.1
+  description: JobTopBob API server
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT issued by Better Auth, validated via JWKS
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK

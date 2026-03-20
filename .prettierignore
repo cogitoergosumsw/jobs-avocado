@@ -1,0 +1,15 @@
+# Go directories
+apps/api/
+apps/worker/
+internal/
+
+# Build outputs
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+
+# Generated files
+package-lock.json
+apps/api/db/generated/

@@ -1,0 +1,19 @@
+{
+  "name": "@jobtopbob/scraper-linkedin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo 'TODO: scraper dev'",
+    "build": "echo 'TODO: tsc'",
+    "lint": "echo 'TODO: eslint .'",
+    "check-types": "echo 'TODO: tsc --noEmit'",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@jobtopbob/scraper-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@jobtopbob/config": "workspace:*"
+  }
+}

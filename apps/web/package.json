@@ -1,0 +1,16 @@
+{
+  "name": "@jobtopbob/web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'TODO: next dev'",
+    "build": "echo 'TODO: next build'",
+    "lint": "echo 'TODO: eslint .'",
+    "check-types": "echo 'TODO: tsc --noEmit'",
+    "clean": "rm -rf .next .turbo"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@jobtopbob/config": "workspace:*"
+  }
+}

@@ -44,7 +44,7 @@ Prompts are `.txt` files loaded via Go `embed.FS` in `internal/ai/prompts/`.
 
 ```bash
 # Setup
-npm install
+pnpm install
 docker compose -f docker/docker-compose.dev.yml up -d
 cd apps/api && go run ./cmd/migrate/main.go up
 
@@ -53,7 +53,7 @@ cd apps/api && go run ./cmd/migrate/main.go up
 ./scripts/generate-api-client.sh    # OpenAPI spec → TypeScript types
 
 # Development (starts all services)
-npm run dev
+pnpm dev
 
 # Go quality
 go vet ./...
@@ -62,13 +62,13 @@ govulncheck ./...
 go test ./...
 
 # TypeScript quality
-npx tsc --noEmit
-npx eslint .
-npx prettier --check .
-npx vitest
+pnpm tsc --noEmit
+pnpm eslint .
+pnpm prettier --check .
+pnpm vitest
 
 # E2E tests
-npx playwright test
+pnpm playwright test
 ```
 
 **Dev URLs:** Frontend `:3000` | Go API `:8080` | Resume Builder `:3010` | Asynq Inspector `:8081`
